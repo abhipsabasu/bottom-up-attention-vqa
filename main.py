@@ -1,6 +1,6 @@
 import argparse
 import json
-import cPickle as pickle
+import pickle
 from collections import defaultdict, Counter
 from os.path import dirname, join
 
@@ -113,9 +113,9 @@ def main():
 
     # Record the bias function we are using
     utils.create_dir(args.output)
-    with open(args.output + "/debias_objective.json", "w") as f:
-        js = model.debias_loss_fn.to_json()
-        json.dump(js, f, indent=2)
+    # with open(args.output + "/debias_objective.json", "w") as f:
+    #     js = model.debias_loss_fn.to_json()
+    #     json.dump(js, f, indent=2)
 
     model = model.cuda()
     batch_size = args.batch_size

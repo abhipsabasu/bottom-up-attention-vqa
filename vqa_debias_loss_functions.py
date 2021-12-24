@@ -50,7 +50,7 @@ class DebiasLossFn(nn.Module):
         if init is object.__init__:
             return []  # No init args
 
-        init_signature = inspect.getargspec(init)
+        init_signature = inspect.getfullargspec(init)
         if init_signature.varargs is not None:
             raise NotImplementedError("varags not supported")
         if init_signature.keywords is not None:

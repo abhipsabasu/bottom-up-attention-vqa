@@ -6,7 +6,7 @@ import sys
 import json
 import numpy as np
 import re
-import cPickle
+import pickle as cPickle
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from dataset import Dictionary
@@ -142,13 +142,15 @@ def filter_answers(answers_dset, min_occurence):
         if gtruth not in occurence:
             occurence[gtruth] = set()
         occurence[gtruth].add(ans_entry['question_id'])
+    new = {}
     for answer in occurence.keys():
         if len(occurence[answer]) < min_occurence:
-            occurence.pop(answer)
+            continue
+        new[answer] = occurence[answer]
 
     print('Num of answers that appear >= %d times: %d' % (
-        min_occurence, len(occurence)))
-    return occurence
+        min_occurence, len(new)))
+    return new
 
 
 def create_ans2label(occurence, name, cache_root):

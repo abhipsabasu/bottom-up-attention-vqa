@@ -1,7 +1,7 @@
 from __future__ import print_function
 import os
 import json
-import cPickle
+import pickle as cPickle
 from collections import Counter
 
 import numpy as np
@@ -210,7 +210,7 @@ class VQAFeatureDataset(Dataset):
             features = np.array(self.features[entry['image_idx']])
             features = torch.from_numpy(features).view(36, 2048)
         else:
-            features = np.fromfile("data/trainval_features/" + str(entry["image_id"]) + ".data", np.float32)
+            features = np.fromfile("data/trainval_features/" + str(entry["image_id"]) + ".bin", np.float32)
             features = torch.from_numpy(features).view(36, 2048)
 
         question = entry['q_token']
