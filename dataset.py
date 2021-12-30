@@ -10,6 +10,7 @@ import h5py
 import torch
 from torch.utils.data import Dataset
 from tqdm import tqdm
+from language_model import WordEmbedding
 
 class Dictionary(object):
     def __init__(self, word2idx=None, idx2word=None):
@@ -163,7 +164,12 @@ class VQAFeatureDataset(Dataset):
                 self.hf.close()
         else:
             self.image_to_fe = None
-
+        w_emb = WordEmbedding(dictionary.ntoken, 300, 0.0).cuda()
+        answers = {i: torch.tensor(self.dictionary.tokenize(a, False)).to('cuda:0') for (a, i) in self.ans2label.items()}
+        answers = {i: w_emb(tokens.to('cuda:0').int()) for i, tokens in answers.items()}
+        ans_emb = {i: torch.sum(embeddings, dim=0) for i, embeddings in answers.items()}
+        ans_emb = torch.stack(list(ans_emb.values())).to('cuda:0')
+        torch.save(ans_emb, os.path.join('data', 'ans_embedding.pth'))
         self.tokenize()
         self.tensorize()
 
