@@ -52,7 +52,14 @@ def parse_args():
 
 def main():
     args = parse_args()
-
+    torch.backends.cudnn.enabled = False
+    torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.deterministic = True
+    torch.manual_seed(args.seed)
+    # torch.initial_seed(args.seed)
+    # torch.seed(args.seed)
+    torch.cuda.manual_seed(args.seed)
+    np.random.seed(args.seed)
     dictionary = Dictionary.load_from_file('data/dictionary.pkl')
     cp = not args.nocp
 
@@ -120,9 +127,8 @@ def main():
     model = model.cuda()
     batch_size = args.batch_size
 
-    torch.manual_seed(args.seed)
-    torch.cuda.manual_seed(args.seed)
-    torch.backends.cudnn.benchmark = True
+    print(torch.initial_seed(), torch.seed())
+    # torch.backends.cudnn.benchmark = True
 
     # The original version uses multiple workers, but that just seems slower on my setup
     train_loader = DataLoader(train_dset, batch_size, shuffle=True, num_workers=0)

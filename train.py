@@ -13,8 +13,12 @@ from tqdm import tqdm
 from torch.optim.lr_scheduler import MultiStepLR
 from language_model import WordEmbedding
 from dataset import Dictionary
+import torch.nn.functional as F
 
 torch.autograd.set_detect_anomaly(True)
+torch.set_printoptions(profile="full")
+
+
 def compute_score_with_logits(logits, labels):
     logits = torch.max(logits, 1)[1].data # argmax
     one_hots = torch.zeros(*labels.size()).cuda()
@@ -34,6 +38,7 @@ def cosine_loss(v, v_recons):
 
 def train(model, train_loader, eval_loader, num_epochs, output, eval_each_epoch):
     ans_embedding = torch.load(os.path.join('data', 'ans_embedding.pth'))
+    # Tensor = torch.cuda.FloatTensor if cuda else torch.FloatTensor
     utils.create_dir(output)
     topv = 1
     top_hint = 9
@@ -50,22 +55,35 @@ def train(model, train_loader, eval_loader, num_epochs, output, eval_each_epoch)
         train_score = 0
         l1_tot = 0
         t = time.time()
-        for i, (v, q, a, b) in tqdm(enumerate(train_loader), ncols=100,
+        for i, (v, q, a, q_id, hint, b) in tqdm(enumerate(train_loader), ncols=100,
                                     desc="Epoch %d" % (epoch+1), total=len(train_loader)):
             optim.step()
             optim.zero_grad()
             total_step += 1
+            # print(b[0])
             v = Variable(v).cuda().requires_grad_()
             q = Variable(q).cuda()
             a = Variable(a).cuda()
             b = Variable(b).cuda()
-            # hintscore = Variable(hint).cuda()
+            hintscore = Variable(hint).cuda()
             bsize = v.size(0)
+            # print(hintscore.size())
+            z = Variable(torch.Tensor(np.random.normal(0, 1, (v.shape[0], v.shape[2])))).cuda()
+
             if epoch < 0:
-                pred, loss, l1 = model(v, None, q, a, b, shuffle=False)
+                pred, loss, l1 = model(v, None, q, a, b, hintscore=hintscore, shuffle=False, focal=True)
             else:
-                pred, loss, l1 = model(v, None, q, a, b, shuffle=True)
+                pred, loss, l1 = model(v, None, q, a, b, hintscore=hintscore, shuffle=True, focal=False)
                 l1_tot += l1.item() * v.size(0)
+            # else:
+            #     pred, pred_shuffle, loss_pos, loss_shuffle, l1 = model(v, None, q, a, b, hintscore=hintscore,
+            #                                                            shuffle=True, focal=True)
+            #     loss = loss_pos + 3*loss_shuffle
+
+            # else:
+            #     pred, pred_shuffle, loss_pos, loss_shuffle, l1 = model(v, None, q, a, b, hintscore=hintscore,
+            #                                                            shuffle=True, focal=True)
+            #     loss = loss_pos + 3 * loss_shuffle
             # print("1", loss)
             if (loss != loss).any():
                 raise ValueError("NaN loss")
@@ -80,17 +98,11 @@ def train(model, train_loader, eval_loader, num_epochs, output, eval_each_epoch)
             #     loss = loss_pos + 3*loss_shuffle
 
             # visual_grad_cam = visual_grad.sum(2)
-            # hint_sort, hint_ind = hintscore.sort(1, descending=True)
-            # v_ind = hint_ind[:, :top_hint]
+
             # # v_grad = visual_grad_cam.gather(1, v_ind)
             # # v_grad_ind = v_grad.sort(1, descending=True)[1][:, :topv]
             # # v_star = v_ind.gather(1, v_grad_ind)
-            # v_ = torch.zeros(v.shape[0], 36).cuda()
-            # v_.scatter_(1, v_ind, 1)
-            # v_ = v_[:, :, None].expand(bsize, v.shape[1], v.shape[2])
-            # v = v * v_
-            # v = v[abs(v).sum(dim=2) != 0]
-            # v = v.view(bsize, top_hint, -1)
+
             # v_recons = v_recons.view(bsize, topv, -1)
             # v_recons_j = v_recons_j.view(bsize, topv, -1)
             # # print(v_recons)
@@ -115,9 +127,9 @@ def train(model, train_loader, eval_loader, num_epochs, output, eval_each_epoch)
         model_path = os.path.join(output, 'model' + str(epoch) + '.pth')
         torch.save(model.state_dict(), model_path)
         run_eval = True #eval_each_epoch or (epoch == num_epochs - 1)
-        for name, p in model.named_parameters():
-            if p.grad is not None:
-                logger.write(name+' '+str(p.grad.norm()))
+        # for name, p in model.named_parameters():
+        #     if p.grad is not None:
+        #         logger.write(name+' '+str(p.grad.norm()))
         if run_eval:
             model.train(False)
             results = evaluate(model, eval_loader)
@@ -126,7 +138,7 @@ def train(model, train_loader, eval_loader, num_epochs, output, eval_each_epoch)
             results["train_loss"] = total_loss
             results["train_score"] = train_score.item()
             all_results.append(results)
-            print(all_results)
+            # print(all_results)
             with open(join(output, "results.json"), "w") as f:
                 json.dump(all_results, f, indent=2)
 
@@ -145,7 +157,7 @@ def train(model, train_loader, eval_loader, num_epochs, output, eval_each_epoch)
                 torch.save(model.state_dict(), model_path)
                 print("High score! model saved.")
             logger.write('\teval score: %.2f (%.2f)' % (100 * eval_score, 100 * bound))
-
+        logger.write('Highest Score till now: %.2f' %(100 * best_score))
     # model_path = os.path.join(output, 'model.pth')
     # torch.save(model.state_dict(), model_path)
 
@@ -157,11 +169,11 @@ def evaluate(model, dataloader):
 
     all_logits = []
     all_bias = []
-    for v, q, a, b in tqdm(dataloader, ncols=100, total=len(dataloader), desc="eval"):
+    for v, q, a, q_id, b in tqdm(dataloader, ncols=100, total=len(dataloader), desc="eval"):
         with torch.no_grad():
             v = Variable(v).cuda()
             q = Variable(q).cuda()
-            pred, _, _ = model(v, None, q, None, None)
+            pred, _, _ = model(v, None, q, None, None, None)
             all_logits.append(pred.data.cpu().numpy())
 
             batch_score = compute_score_with_logits(pred, a.cuda()).sum()

@@ -122,7 +122,11 @@ class VQAFeatureDataset(Dataset):
                  use_hdf5=False, cache_image_features=False):
         super(VQAFeatureDataset, self).__init__()
         assert name in ['train', 'val']
-
+        self.name = name
+        with open('data/train_cpv2_hintscore.json', 'r') as f:
+            self.train_hintscore = json.load(f)
+        with open('data/test_cpv2_hintscore.json', 'r') as f:
+            self.test_hintscore = json.load(f)
         if cp:
             ans2label_path = os.path.join(dataroot, 'cp-cache', 'trainval_ans2label.pkl')
             label2ans_path = os.path.join(dataroot, 'cp-cache', 'trainval_label2ans.pkl')
@@ -209,6 +213,7 @@ class VQAFeatureDataset(Dataset):
                 entry['answer']['scores'] = None
 
     def __getitem__(self, index):
+
         entry = self.entries[index]
         if self.image_to_fe is not None:
             features = self.image_to_fe[entry["image_id"]]
@@ -218,7 +223,7 @@ class VQAFeatureDataset(Dataset):
         else:
             features = np.fromfile("data/trainval_features/" + str(entry["image_id"]) + ".bin", np.float32)
             features = torch.from_numpy(features).view(36, 2048)
-
+        q_id = entry['question_id']
         question = entry['q_token']
         answer = entry['answer']
         labels = answer['labels']
@@ -226,11 +231,19 @@ class VQAFeatureDataset(Dataset):
         target = torch.zeros(self.num_ans_candidates)
         if labels is not None:
             target.scatter_(0, labels, scores)
-
-        if "bias" in entry:
-            return features, question, target, entry["bias"]
+        if self.name == 'train':
+            train_hint = torch.tensor(self.train_hintscore[str(q_id)])
+            # print(train_hint.size())
+            if "bias" in entry:
+                return features, question, target, q_id, train_hint, entry["bias"]
+            else:
+                return features, question, target, q_id, train_hint, 0
         else:
-            return features, question, target, 0
+            # test_hint = torch.tensor(self.test_hintsocre[str(q_id)])
+            if "bias" in entry:
+                return features, question, target, q_id, entry["bias"]
+            else:
+                return features, question, target, q_id, 0
 
     def __len__(self):
         return len(self.entries)
