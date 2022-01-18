@@ -31,3 +31,4 @@ if __name__ == '__main__':
     print('============')
     fc2 = FCNet([10, 20])
     print(fc2)
+    print(fc2)

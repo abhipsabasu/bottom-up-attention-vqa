@@ -3,3 +3,4 @@
 *.ipynb
 data
 saved_models
+rcnn_feature

@@ -16,6 +16,17 @@ import utils
 
 from vqa_debias_loss_functions import *
 
+seed = 2411
+torch.manual_seed(seed)
+torch.cuda.manual_seed(seed)
+np.random.seed(seed)
+torch.backends.cudnn.benchmark = True
+
+
+def weights_init_kn(m):
+    if isinstance(m, nn.Linear):
+        nn.init.kaiming_normal_(m.weight.data, a=0.01)
+
 
 def parse_args():
     parser = argparse.ArgumentParser("Train the BottomUpTopDown model with a de-biasing method")
@@ -52,14 +63,7 @@ def parse_args():
 
 def main():
     args = parse_args()
-    torch.backends.cudnn.enabled = False
-    torch.backends.cudnn.benchmark = False
-    torch.backends.cudnn.deterministic = True
-    torch.manual_seed(args.seed)
-    # torch.initial_seed(args.seed)
-    # torch.seed(args.seed)
-    torch.cuda.manual_seed(args.seed)
-    np.random.seed(args.seed)
+
     dictionary = Dictionary.load_from_file('data/dictionary.pkl')
     cp = not args.nocp
 
@@ -120,22 +124,21 @@ def main():
 
     # Record the bias function we are using
     utils.create_dir(args.output)
-    # with open(args.output + "/debias_objective.json", "w") as f:
-    #     js = model.debias_loss_fn.to_json()
-    #     json.dump(js, f, indent=2)
+    with open(args.output + "/debias_objective.json", "w") as f:
+        js = model.debias_loss_fn.to_json()
+        json.dump(js, f, indent=2)
 
     model = model.cuda()
+    # model.apply(weights_init_kn)
     batch_size = args.batch_size
 
-    print(torch.initial_seed(), torch.seed())
-    # torch.backends.cudnn.benchmark = True
 
     # The original version uses multiple workers, but that just seems slower on my setup
     train_loader = DataLoader(train_dset, batch_size, shuffle=True, num_workers=0)
     eval_loader = DataLoader(eval_dset, batch_size, shuffle=False, num_workers=0)
 
     print("Starting training...")
-    train(model, train_loader, eval_loader, args.epochs, args.output, args.eval_each_epoch)
+    train(model, train_loader, eval_loader, args.epochs, args.output, args.eval_each_epoch, seed)
 
 
 if __name__ == '__main__':

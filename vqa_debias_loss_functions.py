@@ -42,7 +42,6 @@ class DebiasLossFn(nn.Module):
 
     def to_json(self):
         """Get a json representation of this loss function.
-
         We construct this by looking up the __init__ args
         """
         cls = self.__class__
@@ -50,7 +49,7 @@ class DebiasLossFn(nn.Module):
         if init is object.__init__:
             return []  # No init args
 
-        init_signature = inspect.getfullargspec(init)
+        init_signature = inspect.getargspec(init)
         if init_signature.varargs is not None:
             raise NotImplementedError("varags not supported")
         if init_signature.keywords is not None:
@@ -100,7 +99,7 @@ class BiasProduct(DebiasLossFn):
     def forward(self, hidden, logits, bias, labels):
         smooth = self.constant_smooth
         if self.smooth:
-            smooth += F.sigmoid(self.smooth_param)
+            smooth += torch.sigmoid(self.smooth_param)
 
         # Convert the bias into log-space, with a factor for both the
         # binary outputs for each answer option
@@ -151,7 +150,7 @@ class LearnedMixin(DebiasLossFn):
         # Smooth
         bias += self.constant_smooth
         if self.smooth:
-            soften_factor = F.sigmoid(self.smooth_param)
+            soften_factor = torch.sigmoid(self.smooth_param)
             bias = bias + soften_factor.unsqueeze(1)
 
         bias = torch.log(bias)  # Convert to logspace

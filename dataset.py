@@ -10,7 +10,8 @@ import h5py
 import torch
 from torch.utils.data import Dataset
 from tqdm import tqdm
-from language_model import WordEmbedding
+import torch.nn.functional as F
+
 
 class Dictionary(object):
     def __init__(self, word2idx=None, idx2word=None):
@@ -78,7 +79,6 @@ def _create_entry(img_idx, question, answer):
 
 def _load_dataset(dataroot, name, img_id2val, cp=False):
     """Load entries
-
     img_id2val: dict {img_id -> val} val can be used to retrieve image or features
     dataroot: root path of dataset
     name: 'train', 'val'
@@ -123,16 +123,16 @@ class VQAFeatureDataset(Dataset):
         super(VQAFeatureDataset, self).__init__()
         assert name in ['train', 'val']
         self.name = name
-        with open('data/train_cpv2_hintscore.json', 'r') as f:
-            self.train_hintscore = json.load(f)
-        with open('data/test_cpv2_hintscore.json', 'r') as f:
-            self.test_hintscore = json.load(f)
         if cp:
             ans2label_path = os.path.join(dataroot, 'cp-cache', 'trainval_ans2label.pkl')
             label2ans_path = os.path.join(dataroot, 'cp-cache', 'trainval_label2ans.pkl')
         else:
             ans2label_path = os.path.join(dataroot, 'cache', 'trainval_ans2label.pkl')
             label2ans_path = os.path.join(dataroot, 'cache', 'trainval_label2ans.pkl')
+        with open('data/train_cpv2_hintscore.json', 'r') as f:
+            self.train_hintscore = json.load(f)
+        with open('data/test_cpv2_hintscore.json', 'r') as f:
+            self.test_hintscore = json.load(f)
         self.ans2label = cPickle.load(open(ans2label_path, 'rb'))
         self.label2ans = cPickle.load(open(label2ans_path, 'rb'))
         self.num_ans_candidates = len(self.ans2label)
@@ -160,28 +160,33 @@ class VQAFeatureDataset(Dataset):
                     if use_hdf5:
                         fe = np.array(self.features[imgid2idx[img_id]])
                     else:
-                        fe = np.fromfile("data/trainval_features/" + str(img_id) + ".bin", np.float32)
+                        # fe = np.fromfile("data/trainval_features/" + str(img_id) + ".bin", np.float32)
+                        fe = torch.load('rcnn_feature/' + str(img_id) + '.pth', encoding='latin')['image_feature']
 
-                    image_to_fe[img_id] = torch.from_numpy(fe).view(36, 2048)
+                    image_to_fe[img_id] = fe #torch.from_numpy(fe).view(36, 2048)
             self.image_to_fe = image_to_fe
             if use_hdf5:
                 self.hf.close()
         else:
             self.image_to_fe = None
-        w_emb = WordEmbedding(dictionary.ntoken, 300, 0.0).cuda()
-        answers = {i: torch.tensor(self.dictionary.tokenize(a, False)).to('cuda:0') for (a, i) in self.ans2label.items()}
-        answers = {i: w_emb(tokens.to('cuda:0').int()) for i, tokens in answers.items()}
-        ans_emb = {i: torch.sum(embeddings, dim=0) for i, embeddings in answers.items()}
-        ans_emb = torch.stack(list(ans_emb.values())).to('cuda:0')
-        torch.save(ans_emb, os.path.join('data', 'ans_embedding.pth'))
+
         self.tokenize()
         self.tensorize()
-
+        max_length = 10
+        self.ans_tokens = torch.zeros((2274, 10))
+        for ele in range(len(self.label2ans)):
+            tokens = self.dictionary.tokenize(self.label2ans[ele], True)
+            tokens = tokens[:max_length]
+            if len(tokens) < max_length:
+                # Note here we pad in front of the sentence
+                padding = [self.dictionary.padding_idx] * (max_length - len(tokens))
+                tokens = padding + tokens
+            self.ans_tokens[ele] = torch.from_numpy(np.array(tokens))
+        print(self.ans_tokens[[1, 2]].size())
         self.v_dim = 2048
 
     def tokenize(self, max_length=14):
         """Tokenizes the questions.
-
         This will add q_token in each entry of the dataset.
         -1 represent nil, and should be treated as padding_idx in embedding
         """
@@ -213,7 +218,6 @@ class VQAFeatureDataset(Dataset):
                 entry['answer']['scores'] = None
 
     def __getitem__(self, index):
-
         entry = self.entries[index]
         if self.image_to_fe is not None:
             features = self.image_to_fe[entry["image_id"]]
@@ -221,8 +225,9 @@ class VQAFeatureDataset(Dataset):
             features = np.array(self.features[entry['image_idx']])
             features = torch.from_numpy(features).view(36, 2048)
         else:
-            features = np.fromfile("data/trainval_features/" + str(entry["image_id"]) + ".bin", np.float32)
-            features = torch.from_numpy(features).view(36, 2048)
+            features = torch.load('rcnn_feature/' + str(entry["image_id"]) + '.pth', encoding='latin')['image_feature']
+            # features = np.fromfile("data/trainval_features/" + str(entry["image_id"]) + ".bin", np.float32)
+            # features = torch.from_numpy(features).view(36, 2048)
         q_id = entry['question_id']
         question = entry['q_token']
         answer = entry['answer']
@@ -231,6 +236,7 @@ class VQAFeatureDataset(Dataset):
         target = torch.zeros(self.num_ans_candidates)
         if labels is not None:
             target.scatter_(0, labels, scores)
+
         if self.name == 'train':
             train_hint = torch.tensor(self.train_hintscore[str(q_id)])
             # print(train_hint.size())

@@ -6,7 +6,6 @@ import numpy as np
 
 class WordEmbedding(nn.Module):
     """Word Embedding
-
     The ntoken-th dim is used for padding_idx, which agrees *implicitly*
     with the definition in Dictionary.
     """

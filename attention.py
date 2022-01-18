@@ -35,7 +35,7 @@ class NewAttention(nn.Module):
         self.v_proj = FCNet([v_dim, num_hid])
         self.q_proj = FCNet([q_dim, num_hid])
         self.dropout = nn.Dropout(dropout)
-        self.linear = weight_norm(nn.Linear(num_hid, 1), dim=None)
+        self.linear = weight_norm(nn.Linear(q_dim, 1), dim=None)
 
     def forward(self, v, q):
         """
@@ -54,35 +54,3 @@ class NewAttention(nn.Module):
         joint_repr = self.dropout(joint_repr)
         logits = self.linear(joint_repr)
         return logits
-
-
-class NewAttentionQ(nn.Module):
-    def __init__(self, v_dim, q_dim, num_hid, dropout=0.2):
-        super(NewAttentionQ, self).__init__()
-
-        self.v_proj = FCNet([v_dim, num_hid])
-        self.q_proj = FCNet([q_dim, num_hid])
-        self.dropout = nn.Dropout(dropout)
-        self.linear = weight_norm(nn.Linear(num_hid*2, 1), dim=None)
-
-    def forward(self, v, q):
-        """
-        v: [batch, k, vdim]
-        q: [batch, qdim]
-        """
-        logits = self.logits(v, q)
-        # w = nn.functional.softmax(logits, 1)
-        return logits
-
-    def logits(self, v, q):
-        batch, k, _ = v.size()
-        v_proj = self.v_proj(v) # [batch, k, qdim]
-        q_proj = self.q_proj(q)
-        attn_scores = torch.bmm(q_proj, torch.transpose(v_proj, 1, 2))
-        attn_scores = torch.softmax(attn_scores, dim=2)
-        attn_out = torch.bmm(attn_scores, v_proj)
-        # print(attn_out.sum(1).size())
-        # joint_repr = v_proj * q_proj
-        # joint_repr = self.dropout(joint_repr)
-        # logits = self.linear(joint_repr)
-        return attn_out + q_proj
