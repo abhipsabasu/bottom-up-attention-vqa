@@ -34,7 +34,7 @@ def train(model, train_loader, eval_loader, num_epochs, output, eval_each_epoch,
     all_results = []
     best_score = 0
     total_step = 0
-
+    print('Seed:', seed)
     for epoch in range(num_epochs):
         total_loss = 0
         train_score = 0
@@ -74,25 +74,28 @@ def train(model, train_loader, eval_loader, num_epochs, output, eval_each_epoch,
             results["step"] = total_step
             results["train_loss"] = total_loss
             results["train_score"] = train_score.item()
+            eval_score = results["score"]
+            if best_score < eval_score:
+                print('High Score! Model saved')
+                best_score = eval_score
+                model_path = os.path.join(output, str(seed) + '_model.pth')
+                torch.save(model.state_dict(), model_path)
+            results["best_score"] = best_score
             all_results.append(results)
 
-            with open(join(output, "results.json"), "w") as f:
+            with open(join(output, str(seed) + "_results.json"), "w") as f:
                 json.dump(all_results, f, indent=2)
 
             model.train(True)
 
-            eval_score = results["score"]
             bound = results["upper_bound"]
 
         logger.write('epoch %d, time: %.2f' % (epoch+1, time.time()-t))
         logger.write('\ttrain_loss: %.2f, score: %.2f' % (total_loss, train_score))
 
         if run_eval:
-            if best_score < eval_score:
-                print('High Score! Model saved')
-                best_score = eval_score
-                model_path = os.path.join(output, str(seed) + '_model.pth')
-                torch.save(model.state_dict(), model_path)
+
+            print('Best Score:', best_score*100, 'seed:', seed)
             logger.write('\teval score: %.2f (%.2f)' % (100 * eval_score, 100 * bound))
 
 

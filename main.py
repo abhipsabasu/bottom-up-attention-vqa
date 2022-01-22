@@ -13,10 +13,14 @@ from dataset import Dictionary, VQAFeatureDataset
 import base_model
 from train import train
 import utils
+import sys
 
 from vqa_debias_loss_functions import *
 
-seed = 2411
+parser = argparse.ArgumentParser("Train the BottomUpTopDown model with a de-biasing method")
+parser.add_argument('--seed', type=int, default=1111, help='random seed')
+args = parser.parse_args()
+seed = args.seed
 torch.manual_seed(seed)
 torch.cuda.manual_seed(seed)
 np.random.seed(seed)
