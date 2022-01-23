@@ -10,6 +10,8 @@ import utils
 from torch.autograd import Variable
 import numpy as np
 from tqdm import tqdm
+from torch.optim.lr_scheduler import MultiStepLR
+
 
 def cosine_loss(v, v_recons):
     cos = nn.CosineSimilarity(dim=1)
@@ -27,9 +29,18 @@ def compute_score_with_logits(logits, labels):
     return scores
 
 
+def get_lr(optimizer):
+    for param_group in optimizer.param_groups:
+        return param_group['lr']
+
+
 def train(model, train_loader, eval_loader, num_epochs, output, eval_each_epoch, seed):
     utils.create_dir(output)
     optim = torch.optim.Adamax(model.parameters())
+    # optim = torch.optim.Adam(model.parameters(), lr=0.002, betas=(0.9, 0.999), eps=1e-08,
+    #                          weight_decay=0)
+    scheduler = MultiStepLR(optim, milestones=[10, 15, 20, 25, 30, 35], gamma=0.5)
+    scheduler.last_epoch = 0
     logger = utils.Logger(os.path.join(output, 'log.txt'))
     all_results = []
     best_score = 0
@@ -40,7 +51,7 @@ def train(model, train_loader, eval_loader, num_epochs, output, eval_each_epoch,
         train_score = 0
 
         t = time.time()
-
+        print(get_lr(optim))
         for i, (v, q, a, q_id, hint, b) in tqdm(enumerate(train_loader), ncols=100,
                                     desc="Epoch %d" % (epoch+1), total=len(train_loader)):
             total_step += 1
@@ -92,7 +103,7 @@ def train(model, train_loader, eval_loader, num_epochs, output, eval_each_epoch,
 
         logger.write('epoch %d, time: %.2f' % (epoch+1, time.time()-t))
         logger.write('\ttrain_loss: %.2f, score: %.2f' % (total_loss, train_score))
-
+        scheduler.step()
         if run_eval:
 
             print('Best Score:', best_score*100, 'seed:', seed)

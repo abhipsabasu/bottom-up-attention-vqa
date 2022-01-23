@@ -1,16 +1,21 @@
 import torch
 import torch.nn as nn
-from attention import Attention, NewAttention, NewAttentionQ
+from attention import Attention, NewAttention
 from language_model import WordEmbedding, QuestionEmbedding
 from classifier import SimpleClassifier
 from fc import FCNet
 import numpy as np
-import torch.nn.functional as F
-from vqa_debias_loss_functions import Plain
-import random
+from torch.autograd import Variable
 from train import cosine_loss
-import block
 
+
+def instance_bce_with_logits(logits, labels, reduction='mean'):
+    assert logits.dim() == 2
+
+    loss = nn.functional.binary_cross_entropy_with_logits(logits, labels, reduction='mean')
+    if reduction == 'mean':
+        loss *= labels.size(1)
+    return loss
 
 def gelu(x):
     """Implementation of the gelu activation function.
@@ -51,56 +56,15 @@ class BertLayerNorm(nn.Module):
         return self.weight * x + self.bias
 
 
-def compute_self_loss(logits_neg, a):
-    prediction_ans_k, top_ans_ind = torch.topk(F.softmax(a, dim=-1), k=1, dim=-1, sorted=False)
-    neg_top_k = torch.gather(F.softmax(logits_neg, dim=-1), 1, top_ans_ind).sum(1)
-    qice_loss = neg_top_k.mean()
-    return qice_loss
-
-
-# def instance_bce_with_logits(logits, labels, bias, reduction='mean', focal=False):
-#     assert logits.dim() == 2
-#     if focal is True:
-#         loss = nn.functional.binary_cross_entropy_with_logits(logits, labels, reduction='none')
-#         loss = (1-bias)**2 * loss
-#         if reduction == 'mean':
-#             # loss *= labels.size(1)
-#             loss = loss.sum() / labels.size(0)
-#     else:
-#         loss = nn.functional.binary_cross_entropy_with_logits(logits, labels, reduction='mean')
-#         if reduction == 'mean':
-#             loss *= labels.size(1)
-#     return loss
-
-
-def instance_bce_with_logits(logits, labels, bias, reduction='mean', focal=False):
-    if focal is True:
-        # print(logits.sum())
-        logits = logits + torch.log(bias**1 + 1e-12)
-        # labels = torch.max(labels, 1)[1].data
-        # loss = torch.nn.functional.cross_entropy(logits, labels)
-        loss = nn.functional.binary_cross_entropy_with_logits(logits, labels, reduction='mean')
-        if reduction == 'mean':
-            loss *= labels.size(1)
-    else:
-        loss = nn.functional.binary_cross_entropy_with_logits(logits, labels, reduction='mean')
-        if reduction == 'mean':
-            loss *= labels.size(1)
-    return loss
-
-
 class BaseModel(nn.Module):
-    def __init__(self, w_emb, q_emb, v_att, v_att_1, q_att, q_net, v_net, classifier, num_hid):
+    def __init__(self, w_emb, q_emb, v_att, q_net, v_net, classifier, num_hid, a_token):
         super(BaseModel, self).__init__()
         self.w_emb = w_emb
         self.q_emb = q_emb
         self.v_att = v_att
-        self.q_att = q_att
         self.q_net = q_net
         self.v_net = v_net
-        self.v_att_1 = v_att_1
-        self.classifier = classifier
-        self.debias_loss_fn = None
+        self.a_token = a_token.cuda()
         self.a2v = nn.Sequential(
             nn.Linear(2274, num_hid * 2),
             GeLU(),
@@ -113,110 +77,88 @@ class BaseModel(nn.Module):
             BertLayerNorm(num_hid * 2, eps=1e-12),
             nn.Linear(num_hid * 2, 2048)
         )
-        # self.j2v = nn.Linear(num_hid, 2*num_hid)
-        # self.q2v = nn.Linear(2*num_hid, 2274)
+        self.logit_fc_emb = nn.Sequential(
+            nn.Linear(2274, num_hid * 2),
+            GeLU(),
+            BertLayerNorm(num_hid * 2, eps=1e-12),
+            nn.Linear(num_hid * 2, 620)
+        )
+        self.emb_proj = nn.Sequential(
+            nn.Linear(300, num_hid),
+            GeLU(),
+            BertLayerNorm(num_hid, eps=1e-12),
+            nn.Linear(num_hid, 620)
+        )
+        self.classifier = classifier
+        self.debias_loss_fn = None
         # self.bias_scale = torch.nn.Parameter(torch.from_numpy(np.ones((1, ), dtype=np.float32)*1.2))
         self.bias_lin = torch.nn.Linear(1024, 1)
-        self.normal = nn.BatchNorm1d(num_hid, affine=False)
         self.l1 = torch.nn.L1Loss()
+        self.cos = nn.CosineSimilarity(dim=-1)
+        # self.a_token = Variable(a_token).cuda()
 
-    def forward(self, v, _, q, labels, bias, hintscore, return_weights=False, shuffle=False, focal=False):
+    def forward(self, v, _, q, labels, bias, hint, return_weights=False):
         """Forward
-
         v: [batch, num_objs, obj_dim]
         b: [batch, num_objs, b_dim]
         q: [batch_size, seq_length]
-
         return: logits, not probs
         """
-        top_hint = 9
+        top_hint = 10
         w_emb = self.w_emb(q)
-        # w_emb = self.q_att(w_emb, v)
-        q_emb = self.q_emb(w_emb)  # [batch, q_dim]
-        # att = self.v_att(v, q_emb)
-        # att_1 = self.v_att_1(v, q_emb)
-        # att = att + att_1
-        # v_emb = (att * v).sum(1)  # [batch, v_dim]
-        #
-        batch_size = w_emb.size(0)
-        #
+        q_emb = self.q_emb(w_emb) # [batch, q_dim]
+        # v_mean = torch.mean(v, 1)
+        batch_size = v.size(0)
+        arange = torch.arange(batch_size).unsqueeze(1)
+        att = self.v_att(v, q_emb)
+        v_emb = (att * v).sum(1) # [batch, v_dim]
         q_repr = self.q_net(q_emb)
-        # v_repr = self.v_net(v_emb)
-        # joint_repr = q_repr * v_repr
-        # joint_repr_normal = self.normal(joint_repr)
-        # logits = self.classifier(joint_repr_normal)
-        logits,_ = self.compute_predict(q_repr, q_emb, v)
-        l1 = 0
+        v_repr = self.v_net(v_emb)
+        joint_repr = q_repr * v_repr
+        logits = self.classifier(joint_repr)
         if labels is not None:
             if return_weights:
                 return self.debias_loss_fn(joint_repr, logits, bias, labels, True)
-            # if shuffle is True:
-            #     loss = compute_self_loss(logits, labels)
-            # else:
-            loss = instance_bce_with_logits(logits, labels, bias, focal=focal)
+            loss = self.debias_loss_fn(joint_repr, logits, bias, labels)
+            # hint_sort, hint_ind = hint.sort(1, descending=True)
+            # v_ind = hint_ind[:, :top_hint]
+            # v_ = v[arange, v_ind]
 
-            # if shuffle:
-            #     # hint_sort, hint_ind = hintscore.sort(1, descending=True)
-            #     # v_ind = hint_ind[:, :top_hint]
-            #     # v_ = torch.zeros(v.shape[0], 36).cuda()
-            #     # v_.scatter_(1, v_ind, 1)
-            #     # v_ = v_[:, :, None].expand(batch_size, v.shape[1], v.shape[2])
-            #     # v_ = v * v_
-            #     # # print(v_.size(), v_ind.size())
-            #     # v_ = v_[abs(v_).sum(dim=2) != 0]
-            #     # v_ = v_.view(batch_size, top_hint, -1)
-            #     v_max = torch.mean(v, 1)
-            #     v_recons = self.a2v(logits) + self.q2v(q_emb)
-            #     v_recons = v_recons.unsqueeze(1)
-            #     v_emb_r = (att * v_recons).sum(1)
-            #     v_repr_r = self.v_net(v_emb_r)
-            #     joint_repr_r = q_repr * v_repr_r
-            #     joint_repr_normal_r = self.normal(joint_repr_r)
-            #     logits_r = self.classifier(joint_repr_normal_r)
-            #     l1 = 3 * self.l1(v_max, v_recons)
-            #     cycle = self.debias_loss_fn(joint_repr_r, logits_r, bias, labels)
-            #     loss = (loss + l1 + cycle)  # + instance_bce_with_logits(logits1, labels)
+            # hint_sig = torch.sigmoid(hint)
+            # prediction_ans_k, top_ans_ind = torch.topk(torch.softmax(logits, dim=-1), k=1, dim=-1, sorted=False)
+            # ans = self.a_token[[top_ans_ind.squeeze().tolist()]]
+            # ans = self.w_emb(ans.long()).mean(1)
+
+            v_recons = self.a2v(logits) + self.q2v(q_emb)
+            # v_recons = v_recons.view(batch_size, top_hint, -1)
+
+            hint_sig = torch.sigmoid(hint)
+            hint_expand = hint_sig[:, :, None].expand(batch_size, v.shape[1], v.shape[2])
+            v_weighted = (v * hint_expand).mean(1)
+            l1 = self.l1(v_recons, v_weighted) #instance_bce_with_logits(hint_pred, hint_sig) / 2
+
+            all_ans = self.w_emb(self.a_token.long()).mean(1).cuda()
+            all_ans_embs = self.emb_proj(all_ans)
+            prediction_ans_k, top_ans_ind = torch.topk(torch.softmax(labels, dim=-1), k=1, dim=-1, sorted=False)
+            gt = all_ans_embs[[top_ans_ind.squeeze().tolist()]]
+            logits_projected = self.logit_fc_emb(logits)
+            positive_dist = self.cos(gt, logits_projected)
+            gen_embs = logits_projected.unsqueeze(1)
+            gen_embs = gen_embs.expand(-1, all_ans_embs.shape[0], -1)
+            all_ans_embs = all_ans_embs.unsqueeze(0)
+            all_ans_embs = all_ans_embs.expand(gen_embs.shape[0], -1, -1)
+            d_logit = self.cos(gen_embs, all_ans_embs)
+            num = torch.exp(positive_dist).squeeze(-1)
+            den = torch.exp(d_logit).sum(-1)
+            loss_nce = -1 * torch.log(num / den)
+            loss_nce = loss_nce.mean()
+
+            loss = (loss + l1 + loss_nce) / 3
+
         else:
-            loss = None
-        if shuffle:
-            # construct an irrelevant Q-I pair for each instance
-            # loss = instance_bce_with_logits(logits, labels, bias, focal=focal)
-            # v_max = torch.mean(v, 1)
-            # v_recons = self.a2v(logits) + self.q2v(q_emb)
-            # l1 = 3 * self.l1(v_max, v_recons)
-            # loss = loss + l1
-            index = random.sample(range(0, batch_size), batch_size)
-            v_neg = v[index]
-            logits_neg,_ = self.compute_predict(q_repr, q_emb, v_neg)
-            # att_neg = self.v_att(v_neg, q_emb)
-            # att_1_neg = self.v_att_1(v_neg, q_emb)
-            # att_neg = att_neg + att_1_neg
-            # v_emb_neg = (att_neg * v_neg).sum(1)  # [batch, v_dim]
-            # # q_repr = self.q_net(q_emb)
-            # v_repr_neg = self.v_net(v_emb_neg)
-            # joint_repr_neg = q_repr * v_repr_neg
-            # joint_repr_normal_neg = self.normal(joint_repr_neg)
-            # logits_neg = self.classifier(joint_repr_normal_neg)
-            loss_neg = compute_self_loss(logits_neg, labels)
-            return logits, logits_neg, loss, loss_neg, l1
-        return logits, loss, l1
+          loss = None
+        return logits, loss
 
-    def compute_predict(self, q_repr, q_emb, v):
-
-        att_1 = self.v_att(v, q_emb)  # [batch, 1, v_dim]
-        att_2 = self.v_att_1(v, q_emb)  # [batch, 1, v_dim]
-        att_gv = att_1 + att_2
-
-        gv_embs = (att_gv * v)  # [batch, v_dim]
-        gv_emb = gv_embs.sum(1)
-        gv_repr = self.v_net(gv_emb)
-
-        joint_repr = q_repr * gv_repr
-
-        # joint_repr_normal = self.normal(joint_repr)
-        logits = self.classifier(joint_repr)
-
-        return logits, att_gv
 
 def build_baseline0(dataset, num_hid):
     w_emb = WordEmbedding(dataset.dictionary.ntoken, 300, 0.0)
@@ -232,11 +174,10 @@ def build_baseline0(dataset, num_hid):
 def build_baseline0_newatt(dataset, num_hid):
     w_emb = WordEmbedding(dataset.dictionary.ntoken, 300, 0.0)
     q_emb = QuestionEmbedding(300, num_hid, 1, False, 0.0)
-    q_att = NewAttentionQ(300, dataset.v_dim, 300)
     v_att = NewAttention(dataset.v_dim, q_emb.num_hid, num_hid)
-    v_att_1 = NewAttention(dataset.v_dim, q_emb.num_hid, num_hid)
     q_net = FCNet([q_emb.num_hid, num_hid])
     v_net = FCNet([dataset.v_dim, num_hid])
     classifier = SimpleClassifier(
         num_hid, num_hid * 2, dataset.num_ans_candidates, 0.5)
-    return BaseModel(w_emb, q_emb, v_att, v_att_1, q_att, q_net, v_net, classifier, num_hid)
+    a_token = dataset.ans_tokens
+    return BaseModel(w_emb, q_emb, v_att, q_net, v_net, classifier, num_hid, a_token)
