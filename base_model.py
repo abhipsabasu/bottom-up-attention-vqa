@@ -68,25 +68,25 @@ class BaseModel(nn.Module):
         self.a2v = nn.Sequential(
             nn.Linear(2274, num_hid * 2),
             GeLU(),
-            nn.BatchNorm1d(num_hid, affine=False),
-            nn.Linear(num_hid * 2, 2048)
+            BertLayerNorm(num_hid * 2, eps=1e-12),
+            nn.Linear(num_hid * 2, 20480)
         )
         self.q2v = nn.Sequential(
             nn.Linear(1024, num_hid * 2),
             GeLU(),
-            nn.BatchNorm1d(num_hid, affine=False),
-            nn.Linear(num_hid * 2, 2048)
+            BertLayerNorm(num_hid * 2, eps=1e-12),
+            nn.Linear(num_hid * 2, 20480)
         )
         self.logit_fc_emb = nn.Sequential(
             nn.Linear(1024, num_hid * 2),
             GeLU(),
-            nn.BatchNorm1d(num_hid, affine=False),
+            BertLayerNorm(num_hid * 2, eps=1e-12),
             nn.Linear(num_hid * 2, 620)
         )
         self.emb_proj = nn.Sequential(
             nn.Linear(300, num_hid),
             GeLU(),
-            nn.BatchNorm1d(num_hid, affine=False),
+            BertLayerNorm(num_hid, eps=1e-12),
             nn.Linear(num_hid, 620)
         )
         self.classifier = classifier
@@ -95,7 +95,7 @@ class BaseModel(nn.Module):
         self.bias_lin = torch.nn.Linear(1024, 1)
         self.l1 = torch.nn.L1Loss()
         self.normal = nn.BatchNorm1d(num_hid, affine=False)
-        self.cos = nn.CosineSimilarity(dim=-1)
+        # self.cos = nn.CosineSimilarity(dim=-1)
         # self.a_token = Variable(a_token).cuda()
 
     def forward(self, v, _, q, labels, bias, hint, return_weights=False):
@@ -122,9 +122,9 @@ class BaseModel(nn.Module):
             if return_weights:
                 return self.debias_loss_fn(joint_repr, logits, bias, labels, True)
             loss = self.debias_loss_fn(joint_repr, logits, bias, labels)
-            # hint_sort, hint_ind = hint.sort(1, descending=True)
-            # v_ind = hint_ind[:, :top_hint]
-            # v_ = v[arange, v_ind]
+            hint_sort, hint_ind = hint.sort(1, descending=True)
+            v_ind = hint_ind[:, :top_hint]
+            v_ = v[arange, v_ind]
 
             # hint_sig = torch.sigmoid(hint)
             # prediction_ans_k, top_ans_ind = torch.topk(torch.softmax(logits, dim=-1), k=1, dim=-1, sorted=False)
@@ -132,30 +132,30 @@ class BaseModel(nn.Module):
             # ans = self.w_emb(ans.long()).mean(1)
 
             v_recons = self.a2v(logits) + self.q2v(q_emb)
-            # v_recons = v_recons.view(batch_size, top_hint, -1)
+            v_recons = v_recons.view(batch_size, top_hint, -1)
 
-            hint_sig = torch.sigmoid(hint)
-            hint_expand = hint_sig[:, :, None].expand(batch_size, v.shape[1], v.shape[2])
-            v_weighted = (v * hint_expand).mean(1)
-            l1 = self.l1(v_recons, v_weighted) #instance_bce_with_logits(hint_pred, hint_sig) / 2
+            # hint_sig = torch.sigmoid(hint)
+            # hint_expand = hint_sig[:, :, None].expand(batch_size, v.shape[1], v.shape[2])
+            # v_weighted = (v * hint_expand).mean(1)
+            l1 = 3 * self.l1(v_recons, v_) #instance_bce_with_logits(hint_pred, hint_sig) / 2
 
-            all_ans = self.w_emb(self.a_token.long()).mean(1).cuda()
-            all_ans_embs = self.emb_proj(all_ans)
-            prediction_ans_k, top_ans_ind = torch.topk(torch.softmax(labels, dim=-1), k=1, dim=-1, sorted=False)
-            gt = all_ans_embs[[top_ans_ind.squeeze().tolist()]]
-            logits_projected = self.logit_fc_emb(joint_repr)
-            positive_dist = self.cos(gt, logits_projected)
-            gen_embs = logits_projected.unsqueeze(1)
-            gen_embs = gen_embs.expand(-1, all_ans_embs.shape[0], -1)
-            all_ans_embs = all_ans_embs.unsqueeze(0)
-            all_ans_embs = all_ans_embs.expand(gen_embs.shape[0], -1, -1)
-            d_logit = self.cos(gen_embs, all_ans_embs)
-            num = torch.exp(positive_dist).squeeze(-1)
-            den = torch.exp(d_logit).sum(-1)
-            loss_nce = -1 * torch.log(num / den)
-            loss_nce = loss_nce.mean()
+            # all_ans = self.w_emb(self.a_token.long()).mean(1).cuda()
+            # all_ans_embs = self.emb_proj(all_ans)
+            # prediction_ans_k, top_ans_ind = torch.topk(torch.softmax(labels, dim=-1), k=1, dim=-1, sorted=False)
+            # gt = all_ans_embs[[top_ans_ind.squeeze().tolist()]]
+            # logits_projected = self.logit_fc_emb(joint_repr)
+            # positive_dist = self.cos(gt, logits_projected)
+            # gen_embs = logits_projected.unsqueeze(1)
+            # gen_embs = gen_embs.expand(-1, all_ans_embs.shape[0], -1)
+            # all_ans_embs = all_ans_embs.unsqueeze(0)
+            # all_ans_embs = all_ans_embs.expand(gen_embs.shape[0], -1, -1)
+            # d_logit = self.cos(gen_embs, all_ans_embs)
+            # num = torch.exp(positive_dist).squeeze(-1)
+            # den = torch.exp(d_logit).sum(-1)
+            # loss_nce = -1 * torch.log(num / den)
+            # loss_nce = loss_nce.mean()
 
-            loss = (loss + l1 + loss_nce) / 3
+            loss = loss + l1  # + loss_nce) / 3
 
         else:
           loss = None
