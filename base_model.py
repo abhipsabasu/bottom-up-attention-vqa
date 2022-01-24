@@ -77,18 +77,18 @@ class BaseModel(nn.Module):
             BertLayerNorm(num_hid * 2, eps=1e-12),
             nn.Linear(num_hid * 2, 20480)
         )
-        self.logit_fc_emb = nn.Sequential(
-            nn.Linear(1024, num_hid * 2),
-            GeLU(),
-            BertLayerNorm(num_hid * 2, eps=1e-12),
-            nn.Linear(num_hid * 2, 620)
-        )
-        self.emb_proj = nn.Sequential(
-            nn.Linear(300, num_hid),
-            GeLU(),
-            BertLayerNorm(num_hid, eps=1e-12),
-            nn.Linear(num_hid, 620)
-        )
+        # self.logit_fc_emb = nn.Sequential(
+        #     nn.Linear(1024, num_hid * 2),
+        #     GeLU(),
+        #     BertLayerNorm(num_hid * 2, eps=1e-12),
+        #     nn.Linear(num_hid * 2, 620)
+        # )
+        # self.emb_proj = nn.Sequential(
+        #     nn.Linear(300, num_hid),
+        #     GeLU(),
+        #     BertLayerNorm(num_hid, eps=1e-12),
+        #     nn.Linear(num_hid, 620)
+        # )
         self.classifier = classifier
         self.debias_loss_fn = None
         # self.bias_scale = torch.nn.Parameter(torch.from_numpy(np.ones((1, ), dtype=np.float32)*1.2))
