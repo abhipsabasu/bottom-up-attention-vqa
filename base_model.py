@@ -64,18 +64,25 @@ class BaseModel(nn.Module):
         self.v_att = v_att
         self.q_net = q_net
         self.v_net = v_net
+        self.top_hint = 36
         self.a_token = a_token.cuda()
         self.a2v = nn.Sequential(
             nn.Linear(2274, num_hid * 2),
             GeLU(),
             BertLayerNorm(num_hid * 2, eps=1e-12),
-            nn.Linear(num_hid * 2, 20480)
+            nn.Linear(num_hid * 2, 2048 * self.top_hint)
         )
         self.q2v = nn.Sequential(
             nn.Linear(1024, num_hid * 2),
             GeLU(),
             BertLayerNorm(num_hid * 2, eps=1e-12),
-            nn.Linear(num_hid * 2, 20480)
+            nn.Linear(num_hid * 2, 2048 * self.top_hint)
+        )
+        self.v2v = nn.Sequential(
+            nn.Linear(2048, num_hid * 2),
+            GeLU(),
+            BertLayerNorm(num_hid * 2, eps=1e-12),
+            nn.Linear(num_hid * 2, 2048 * self.top_hint)
         )
         # self.logit_fc_emb = nn.Sequential(
         #     nn.Linear(1024, num_hid * 2),
@@ -105,7 +112,7 @@ class BaseModel(nn.Module):
         q: [batch_size, seq_length]
         return: logits, not probs
         """
-        top_hint = 10
+        # top_hint = 36
         w_emb = self.w_emb(q)
         q_emb = self.q_emb(w_emb) # [batch, q_dim]
         # v_mean = torch.mean(v, 1)
@@ -123,16 +130,15 @@ class BaseModel(nn.Module):
                 return self.debias_loss_fn(joint_repr, logits, bias, labels, True)
             loss = self.debias_loss_fn(joint_repr, logits, bias, labels)
             hint_sort, hint_ind = hint.sort(1, descending=True)
-            v_ind = hint_ind[:, :top_hint]
+            v_ind = hint_ind[:, :self.top_hint]
             v_ = v[arange, v_ind]
 
             # hint_sig = torch.sigmoid(hint)
             # prediction_ans_k, top_ans_ind = torch.topk(torch.softmax(logits, dim=-1), k=1, dim=-1, sorted=False)
             # ans = self.a_token[[top_ans_ind.squeeze().tolist()]]
             # ans = self.w_emb(ans.long()).mean(1)
-
-            v_recons = self.a2v(logits) + self.q2v(q_emb)
-            v_recons = v_recons.view(batch_size, top_hint, -1)
+            v_recons = self.a2v(logits) + self.q2v(q_emb) + self.v2v(v_emb)
+            v_recons = v_recons.view(batch_size, self.top_hint, -1)
 
             # hint_sig = torch.sigmoid(hint)
             # hint_expand = hint_sig[:, :, None].expand(batch_size, v.shape[1], v.shape[2])
