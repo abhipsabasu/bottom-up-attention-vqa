@@ -39,7 +39,7 @@ def train(model, train_loader, eval_loader, num_epochs, output, eval_each_epoch,
     optim = torch.optim.Adamax(model.parameters())
     # optim = torch.optim.Adam(model.parameters(), lr=0.002, betas=(0.9, 0.999), eps=1e-08,
     #                          weight_decay=0)
-    scheduler = MultiStepLR(optim, milestones=[10, 15, 20, 25, 30, 35], gamma=0.5)
+    scheduler = MultiStepLR(optim, milestones=[15, 20, 25, 30, 35], gamma=0.5)
     scheduler.last_epoch = 0
     logger = utils.Logger(os.path.join(output, 'log.txt'))
     all_results = []
@@ -60,8 +60,10 @@ def train(model, train_loader, eval_loader, num_epochs, output, eval_each_epoch,
             a = Variable(a).cuda()
             b = Variable(b).cuda()
             hint = Variable(hint).cuda()
-            pred, loss = model(v, None, q, a, b, hint)
-
+            # if epoch >= 8:
+            pred, loss = model(v, None, q, a, b, hint, cycle=False)
+            # else:
+            #     pred, loss = model(v, None, q, a, b, hint, cycle=False)
             if (loss != loss).any():
               raise ValueError("NaN loss")
             loss.backward()
@@ -121,7 +123,7 @@ def evaluate(model, dataloader):
         with torch.no_grad():
             v = Variable(v).cuda()
             q = Variable(q).cuda()
-            pred, _ = model(v, None, q, None, None, None)
+            pred, _ = model(v, None, q, None, None, None, cycle=False)
             all_logits.append(pred.data.cpu().numpy())
 
             batch_score = compute_score_with_logits(pred, a.cuda()).sum()

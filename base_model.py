@@ -9,12 +9,17 @@ from torch.autograd import Variable
 from train import cosine_loss
 
 
-def instance_bce_with_logits(logits, labels, reduction='mean'):
-    assert logits.dim() == 2
-
-    loss = nn.functional.binary_cross_entropy_with_logits(logits, labels, reduction='mean')
+def instance_bce_with_logits(logits, labels, bias=None, reduction='mean'):
+    # assert logits.dim() == 2
+    #
+    # loss = nn.functional.binary_cross_entropy_with_logits(logits, labels, reduction='mean')
+    # if reduction == 'mean':
+    #     loss *= labels.size(1)
+    loss = nn.functional.binary_cross_entropy_with_logits(logits, labels, reduction='none')
+    loss = (1 - bias) ** 2 * loss
     if reduction == 'mean':
-        loss *= labels.size(1)
+        # loss *= labels.size(1)
+        loss = loss.sum() / labels.size(0)
     return loss
 
 def gelu(x):
@@ -64,7 +69,7 @@ class BaseModel(nn.Module):
         self.v_att = v_att
         self.q_net = q_net
         self.v_net = v_net
-        self.top_hint = 36
+        self.top_hint = 10
         self.a_token = a_token.cuda()
         self.a2v = nn.Sequential(
             nn.Linear(2274, num_hid * 2),
@@ -78,34 +83,36 @@ class BaseModel(nn.Module):
             BertLayerNorm(num_hid * 2, eps=1e-12),
             nn.Linear(num_hid * 2, 2048 * self.top_hint)
         )
-        self.v2v = nn.Sequential(
+        # self.v2v = nn.Sequential(
+        #     nn.Linear(2048, num_hid * 2),
+        #     GeLU(),
+        #     BertLayerNorm(num_hid * 2, eps=1e-12),
+        #     nn.Linear(num_hid * 2, 2048 * self.top_hint)
+        # )
+        self.v_emb2v = nn.Sequential(
             nn.Linear(2048, num_hid * 2),
             GeLU(),
             BertLayerNorm(num_hid * 2, eps=1e-12),
             nn.Linear(num_hid * 2, 2048 * self.top_hint)
         )
-        # self.logit_fc_emb = nn.Sequential(
-        #     nn.Linear(1024, num_hid * 2),
-        #     GeLU(),
-        #     BertLayerNorm(num_hid * 2, eps=1e-12),
-        #     nn.Linear(num_hid * 2, 620)
-        # )
-        # self.emb_proj = nn.Sequential(
-        #     nn.Linear(300, num_hid),
+        # self.W_att = nn.Sequential(
+        #     nn.Linear(2048 * self.top_hint, num_hid),
         #     GeLU(),
         #     BertLayerNorm(num_hid, eps=1e-12),
-        #     nn.Linear(num_hid, 620)
+        #     nn.Linear(num_hid, 2048 * self.top_hint)
         # )
+        # self.w_att = nn.Linear(2048 * self.top_hint, 1)
         self.classifier = classifier
         self.debias_loss_fn = None
         # self.bias_scale = torch.nn.Parameter(torch.from_numpy(np.ones((1, ), dtype=np.float32)*1.2))
         self.bias_lin = torch.nn.Linear(1024, 1)
         self.l1 = torch.nn.L1Loss()
         self.normal = nn.BatchNorm1d(num_hid, affine=False)
+        # self.recons = nn.BatchNorm1d(2048 * self.top_hint, affine=False)
         # self.cos = nn.CosineSimilarity(dim=-1)
         # self.a_token = Variable(a_token).cuda()
 
-    def forward(self, v, _, q, labels, bias, hint, return_weights=False):
+    def forward(self, v, _, q, labels, bias, hint, return_weights=False, cycle=False):
         """Forward
         v: [batch, num_objs, obj_dim]
         b: [batch, num_objs, b_dim]
@@ -133,35 +140,37 @@ class BaseModel(nn.Module):
             v_ind = hint_ind[:, :self.top_hint]
             v_ = v[arange, v_ind]
 
-            # hint_sig = torch.sigmoid(hint)
-            # prediction_ans_k, top_ans_ind = torch.topk(torch.softmax(logits, dim=-1), k=1, dim=-1, sorted=False)
-            # ans = self.a_token[[top_ans_ind.squeeze().tolist()]]
-            # ans = self.w_emb(ans.long()).mean(1)
-            v_recons = self.a2v(logits) + self.q2v(q_emb) + self.v2v(v_emb)
+            # a2v = self.a2v(logits).unsqueeze(-1)
+            # q2v = self.q2v(q_emb).unsqueeze(-1)
+            # cat = torch.cat((a2v, q2v), -1).permute(0, 2, 1)
+            # res = self.W_att(cat)
+            # res = torch.tanh(res)
+            # res = self.w_att(res)
+            # # print(res)
+            # res = torch.softmax(res, 1)
+            # # print(res.shape)
+            # res = res.permute(0, 2, 1)
+            # v_recons = torch.bmm(res, cat)
+
+            v_recons = (self.a2v(logits) + self.q2v(q_emb)) / 2
             v_recons = v_recons.view(batch_size, self.top_hint, -1)
 
-            # hint_sig = torch.sigmoid(hint)
-            # hint_expand = hint_sig[:, :, None].expand(batch_size, v.shape[1], v.shape[2])
-            # v_weighted = (v * hint_expand).mean(1)
-            l1 = 3 * self.l1(v_recons, v_) #instance_bce_with_logits(hint_pred, hint_sig) / 2
+            v_emb_rec = self.v_emb2v(v_emb)
+            v_emb_rec = v_emb_rec.view(batch_size, self.top_hint, -1)
 
-            # all_ans = self.w_emb(self.a_token.long()).mean(1).cuda()
-            # all_ans_embs = self.emb_proj(all_ans)
-            # prediction_ans_k, top_ans_ind = torch.topk(torch.softmax(labels, dim=-1), k=1, dim=-1, sorted=False)
-            # gt = all_ans_embs[[top_ans_ind.squeeze().tolist()]]
-            # logits_projected = self.logit_fc_emb(joint_repr)
-            # positive_dist = self.cos(gt, logits_projected)
-            # gen_embs = logits_projected.unsqueeze(1)
-            # gen_embs = gen_embs.expand(-1, all_ans_embs.shape[0], -1)
-            # all_ans_embs = all_ans_embs.unsqueeze(0)
-            # all_ans_embs = all_ans_embs.expand(gen_embs.shape[0], -1, -1)
-            # d_logit = self.cos(gen_embs, all_ans_embs)
-            # num = torch.exp(positive_dist).squeeze(-1)
-            # den = torch.exp(d_logit).sum(-1)
-            # loss_nce = -1 * torch.log(num / den)
-            # loss_nce = loss_nce.mean()
+            l1 = 3 * self.l1(v_recons, v_)  # instance_bce_with_logits(v_recons, v_weighted) / 2
+            l1_emb = 3 * self.l1(v_emb_rec, v_)
+            loss = loss + l1 + l1_emb
 
-            loss = loss + l1  # + loss_nce) / 3
+            if cycle is True:
+                att = self.v_att(v_emb_rec, q_emb)
+                v_emb_cyc = (att * v_emb_rec).sum(1)
+                v_repr_cyc = self.v_net(v_emb_cyc)
+                joint_repr_cyc = q_repr * v_repr_cyc
+                joint_repr_normal_cyc = self.normal(joint_repr_cyc)
+                logits_cyc = self.classifier(joint_repr_normal_cyc)
+                cyc_loss = instance_bce_with_logits(logits_cyc, labels, bias=bias)
+                loss = loss + cyc_loss  # + loss_nce) / 3
 
         else:
           loss = None
