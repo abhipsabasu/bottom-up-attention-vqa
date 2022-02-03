@@ -111,7 +111,7 @@ def main():
 
     # Build the model using the original constructor
     constructor = 'build_%s' % args.model
-    model = getattr(base_model, constructor)(train_dset, args.num_hid).cuda()
+    model, reconstruction_model = getattr(base_model, constructor)(train_dset, args.num_hid)
     model.w_emb.init_embedding('data/glove6b_init_300d.npy')
 
     # Add the loss_fn based our arguments
@@ -125,13 +125,14 @@ def main():
         model.debias_loss_fn = LearnedMixin(args.entropy_penalty)
     else:
         raise RuntimeError(args.mode)
-
+    # constructor = 'build_reconstruction'
+    # reconstruction_model = getattr(base_model, constructor)(args.num_hid).cuda()
     # Record the bias function we are using
     utils.create_dir(args.output)
     with open(args.output + "/debias_objective.json", "w") as f:
         js = model.debias_loss_fn.to_json()
         json.dump(js, f, indent=2)
-
+    reconstruction_model = reconstruction_model.cuda()
     model = model.cuda()
     # model.apply(weights_init_kn)
     batch_size = args.batch_size
@@ -142,7 +143,11 @@ def main():
     eval_loader = DataLoader(eval_dset, batch_size, shuffle=False, num_workers=0)
 
     print("Starting training...")
-    train(model, train_loader, eval_loader, args.epochs, args.output, args.eval_each_epoch, seed)
+    # train(model, None, train_loader, eval_loader, args.epochs // 3, args.output, True, seed, 'original')
+    # train(model, reconstruction_model, train_loader, eval_loader, args.epochs // 3, args.output, False, seed,
+    #       'reconstruction')
+    train(model, reconstruction_model, train_loader, eval_loader, args.epochs, args.output, True, seed,
+          'combination')
 
 
 if __name__ == '__main__':

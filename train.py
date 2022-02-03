@@ -34,13 +34,20 @@ def get_lr(optimizer):
         return param_group['lr']
 
 
-def train(model, train_loader, eval_loader, num_epochs, output, eval_each_epoch, seed):
+def train(model, reconstruction_model, train_loader, eval_loader, num_epochs, output, eval_each_epoch, seed, state):
     utils.create_dir(output)
-    optim = torch.optim.Adamax(model.parameters())
+    if state == 'original':
+        optim = torch.optim.Adamax(model.parameters(), lr=0.002)
+    else:
+        optim = torch.optim.Adamax([{'params': model.parameters(), 'lr': 0.002},
+                                    {'params': reconstruction_model.parameters(), 'lr': 0.002}])
+        # model_path = os.path.join(output, str(seed) + '_originalfinal_model.pth')
+        # model_data = torch.load(model_path)
+        # model.load_state_dict(model_data)
     # optim = torch.optim.Adam(model.parameters(), lr=0.002, betas=(0.9, 0.999), eps=1e-08,
     #                          weight_decay=0)
-    scheduler = MultiStepLR(optim, milestones=[15, 20, 25, 30, 35], gamma=0.5)
-    scheduler.last_epoch = 0
+    # scheduler = MultiStepLR(optim, milestones=[15, 20, 25, 30, 35], gamma=0.5)
+    # scheduler.last_epoch = 0
     logger = utils.Logger(os.path.join(output, 'log.txt'))
     all_results = []
     best_score = 0
@@ -54,34 +61,43 @@ def train(model, train_loader, eval_loader, num_epochs, output, eval_each_epoch,
         print(get_lr(optim))
         for i, (v, q, a, q_id, hint, b) in tqdm(enumerate(train_loader), ncols=100,
                                     desc="Epoch %d" % (epoch+1), total=len(train_loader)):
+            model.zero_grad()
+            reconstruction_model.zero_grad()
+            optim.zero_grad()
             total_step += 1
             v = Variable(v).cuda()
             q = Variable(q).cuda()
             a = Variable(a).cuda()
             b = Variable(b).cuda()
             hint = Variable(hint).cuda()
-            # if epoch >= 8:
-            pred, loss = model(v, None, q, a, b, hint, cycle=False)
-            # else:
-            #     pred, loss = model(v, None, q, a, b, hint, cycle=False)
+            if state == 'original':
+                pred, _, _, _, loss = model(v, None, q, a, b)
+            elif state == 'reconstruction':
+                pred, v, v_emb, q_emb, _ = model(v, None, q, a, b)
+                loss = reconstruction_model(v, pred, q_emb, v_emb, hint)
+            else:
+                pred, v, v_emb, q_emb, loss = model(v, None, q, a, b)
+                loss = loss + reconstruction_model(v, pred, q_emb, v_emb, hint)
+
             if (loss != loss).any():
               raise ValueError("NaN loss")
             loss.backward()
             nn.utils.clip_grad_norm_(model.parameters(), 0.25)
             optim.step()
-            optim.zero_grad()
 
-            batch_score = compute_score_with_logits(pred, a.data).sum()
             total_loss += loss.item() * v.size(0)
-            train_score += batch_score
+            if state != 'reconstruction':
+                batch_score = compute_score_with_logits(pred, a.data).sum()
+                train_score += batch_score
 
         total_loss /= len(train_loader.dataset)
         train_score = 100 * train_score / len(train_loader.dataset)
 
-        run_eval = True  # eval_each_epoch or (epoch == num_epochs - 1)
+        run_eval = eval_each_epoch  # or (epoch == num_epochs - 1)
 
         if run_eval:
             model.train(False)
+            reconstruction_model.train(False)
             results = evaluate(model, eval_loader)
             results["epoch"] = epoch+1
             results["step"] = total_step
@@ -91,7 +107,7 @@ def train(model, train_loader, eval_loader, num_epochs, output, eval_each_epoch,
             if best_score < eval_score:
                 print('High Score! Model saved')
                 best_score = eval_score
-                model_path = os.path.join(output, str(seed) + '_model.pth')
+                model_path = os.path.join(output, str(seed) + '_' + state + '_model.pth')
                 torch.save(model.state_dict(), model_path)
             results["best_score"] = best_score
             all_results.append(results)
@@ -100,16 +116,22 @@ def train(model, train_loader, eval_loader, num_epochs, output, eval_each_epoch,
                 json.dump(all_results, f, indent=2)
 
             model.train(True)
-
+            reconstruction_model.train(True)
             bound = results["upper_bound"]
 
         logger.write('epoch %d, time: %.2f' % (epoch+1, time.time()-t))
-        logger.write('\ttrain_loss: %.2f, score: %.2f' % (total_loss, train_score))
-        scheduler.step()
+        if state != 'reconstruction':
+            logger.write('\ttrain_loss: %.2f, score: %.2f' % (total_loss, train_score))
+        else:
+            logger.write('\ttrain_loss: %.2f' % (total_loss))
+        # scheduler.step()
         if run_eval:
 
             print('Best Score:', best_score*100, 'seed:', seed)
             logger.write('\teval score: %.2f (%.2f)' % (100 * eval_score, 100 * bound))
+        if state == 'original':
+            model_path = os.path.join(output, str(seed) + '_' + state + 'final_model.pth')
+            torch.save(model.state_dict(), model_path)
 
 
 def evaluate(model, dataloader):
@@ -123,9 +145,8 @@ def evaluate(model, dataloader):
         with torch.no_grad():
             v = Variable(v).cuda()
             q = Variable(q).cuda()
-            pred, _ = model(v, None, q, None, None, None, cycle=False)
+            pred, _, _, _, _ = model(v, None, q, None, None)
             all_logits.append(pred.data.cpu().numpy())
-
             batch_score = compute_score_with_logits(pred, a.cuda()).sum()
             score += batch_score
             upper_bound += (a.max(1)[0]).sum()

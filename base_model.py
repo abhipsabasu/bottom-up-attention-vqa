@@ -69,62 +69,21 @@ class BaseModel(nn.Module):
         self.v_att = v_att
         self.q_net = q_net
         self.v_net = v_net
-        self.top_hint = 10
-        self.a_token = a_token.cuda()
-        self.a2v = nn.Sequential(
-            nn.Linear(2274, num_hid * 2),
-            GeLU(),
-            BertLayerNorm(num_hid * 2, eps=1e-12),
-            nn.Linear(num_hid * 2, 2048 * self.top_hint)
-        )
-        self.q2v = nn.Sequential(
-            nn.Linear(1024, num_hid * 2),
-            GeLU(),
-            BertLayerNorm(num_hid * 2, eps=1e-12),
-            nn.Linear(num_hid * 2, 2048 * self.top_hint)
-        )
-        # self.v2v = nn.Sequential(
-        #     nn.Linear(2048, num_hid * 2),
-        #     GeLU(),
-        #     BertLayerNorm(num_hid * 2, eps=1e-12),
-        #     nn.Linear(num_hid * 2, 2048 * self.top_hint)
-        # )
-        self.v_emb2v = nn.Sequential(
-            nn.Linear(2048, num_hid * 2),
-            GeLU(),
-            BertLayerNorm(num_hid * 2, eps=1e-12),
-            nn.Linear(num_hid * 2, 2048 * self.top_hint)
-        )
-        # self.W_att = nn.Sequential(
-        #     nn.Linear(2048 * self.top_hint, num_hid),
-        #     GeLU(),
-        #     BertLayerNorm(num_hid, eps=1e-12),
-        #     nn.Linear(num_hid, 2048 * self.top_hint)
-        # )
-        # self.w_att = nn.Linear(2048 * self.top_hint, 1)
         self.classifier = classifier
         self.debias_loss_fn = None
         # self.bias_scale = torch.nn.Parameter(torch.from_numpy(np.ones((1, ), dtype=np.float32)*1.2))
         self.bias_lin = torch.nn.Linear(1024, 1)
-        self.l1 = torch.nn.L1Loss()
         self.normal = nn.BatchNorm1d(num_hid, affine=False)
-        # self.recons = nn.BatchNorm1d(2048 * self.top_hint, affine=False)
-        # self.cos = nn.CosineSimilarity(dim=-1)
-        # self.a_token = Variable(a_token).cuda()
 
-    def forward(self, v, _, q, labels, bias, hint, return_weights=False, cycle=False):
+    def forward(self, v, _, q, labels, bias, return_weights=False):
         """Forward
         v: [batch, num_objs, obj_dim]
         b: [batch, num_objs, b_dim]
         q: [batch_size, seq_length]
         return: logits, not probs
         """
-        # top_hint = 36
         w_emb = self.w_emb(q)
         q_emb = self.q_emb(w_emb) # [batch, q_dim]
-        # v_mean = torch.mean(v, 1)
-        batch_size = v.size(0)
-        arange = torch.arange(batch_size).unsqueeze(1)
         att = self.v_att(v, q_emb)
         v_emb = (att * v).sum(1) # [batch, v_dim]
         q_repr = self.q_net(q_emb)
@@ -136,45 +95,44 @@ class BaseModel(nn.Module):
             if return_weights:
                 return self.debias_loss_fn(joint_repr, logits, bias, labels, True)
             loss = self.debias_loss_fn(joint_repr, logits, bias, labels)
-            hint_sort, hint_ind = hint.sort(1, descending=True)
-            v_ind = hint_ind[:, :self.top_hint]
-            v_ = v[arange, v_ind]
-
-            # a2v = self.a2v(logits).unsqueeze(-1)
-            # q2v = self.q2v(q_emb).unsqueeze(-1)
-            # cat = torch.cat((a2v, q2v), -1).permute(0, 2, 1)
-            # res = self.W_att(cat)
-            # res = torch.tanh(res)
-            # res = self.w_att(res)
-            # # print(res)
-            # res = torch.softmax(res, 1)
-            # # print(res.shape)
-            # res = res.permute(0, 2, 1)
-            # v_recons = torch.bmm(res, cat)
-
-            v_recons = (self.a2v(logits) + self.q2v(q_emb)) / 2
-            v_recons = v_recons.view(batch_size, self.top_hint, -1)
-
-            v_emb_rec = self.v_emb2v(v_emb)
-            v_emb_rec = v_emb_rec.view(batch_size, self.top_hint, -1)
-
-            l1 = 3 * self.l1(v_recons, v_)  # instance_bce_with_logits(v_recons, v_weighted) / 2
-            l1_emb = 3 * self.l1(v_emb_rec, v_)
-            loss = loss + l1 + l1_emb
-
-            if cycle is True:
-                att = self.v_att(v_emb_rec, q_emb)
-                v_emb_cyc = (att * v_emb_rec).sum(1)
-                v_repr_cyc = self.v_net(v_emb_cyc)
-                joint_repr_cyc = q_repr * v_repr_cyc
-                joint_repr_normal_cyc = self.normal(joint_repr_cyc)
-                logits_cyc = self.classifier(joint_repr_normal_cyc)
-                cyc_loss = instance_bce_with_logits(logits_cyc, labels, bias=bias)
-                loss = loss + cyc_loss  # + loss_nce) / 3
 
         else:
           loss = None
-        return logits, loss
+        return logits, v, v_emb, q_emb, loss
+
+
+class ReconstructionModule(nn.Module):
+    def __init__(self, top_hint, a2v, q2v, v_emb2v):
+        super(ReconstructionModule, self).__init__()
+        self.top_hint = top_hint
+        self.a2v = a2v
+        self.q2v = q2v
+        self.v_emb2v = v_emb2v
+        self.l1 = torch.nn.L1Loss()
+
+    def forward(self, v, logits, q_emb, v_emb, hint):
+        """Forward
+        v: [batch, num_objs, obj_dim]
+        b: [batch, num_objs, b_dim]
+        q: [batch_size, seq_length]
+        return: logits, not probs
+        """
+        batch_size = v.size(0)
+        arange = torch.arange(batch_size).unsqueeze(1)
+        hint_sort, hint_ind = hint.sort(1, descending=True)
+        v_ind = hint_ind[:, :self.top_hint]
+        v_ = v[arange, v_ind]
+
+        v_recons = (self.a2v(logits) + self.q2v(q_emb)) / 2
+        v_recons = v_recons.view(batch_size, self.top_hint, -1)
+
+        v_emb_rec = self.v_emb2v(v_emb)
+        v_emb_rec = v_emb_rec.view(batch_size, self.top_hint, -1)
+
+        l1 = 3 * self.l1(v_recons, v_)  # instance_bce_with_logits(v_recons, v_weighted) / 2
+        l1_emb = 3 * self.l1(v_emb_rec, v_)
+        loss = l1 + l1_emb
+        return loss
 
 
 def build_baseline0(dataset, num_hid):
@@ -197,4 +155,29 @@ def build_baseline0_newatt(dataset, num_hid):
     classifier = SimpleClassifier(
         num_hid, num_hid * 2, dataset.num_ans_candidates, 0.5)
     a_token = dataset.ans_tokens
-    return BaseModel(w_emb, q_emb, v_att, q_net, v_net, classifier, num_hid, a_token)
+    top_hint = 10
+    a2v = nn.Sequential(
+        nn.Linear(2274, num_hid * 2),
+        GeLU(),
+        BertLayerNorm(num_hid * 2, eps=1e-12),
+        nn.Linear(num_hid * 2, 2048 * top_hint)
+    )
+    q2v = nn.Sequential(
+        nn.Linear(1024, num_hid * 2),
+        GeLU(),
+        BertLayerNorm(num_hid * 2, eps=1e-12),
+        nn.Linear(num_hid * 2, 2048 * top_hint)
+    )
+    v_emb2v = nn.Sequential(
+        nn.Linear(2048, num_hid * 2),
+        GeLU(),
+        BertLayerNorm(num_hid * 2, eps=1e-12),
+        nn.Linear(num_hid * 2, 2048 * top_hint)
+    )
+    basemodel = BaseModel(w_emb, q_emb, v_att, q_net, v_net, classifier, num_hid, a_token)
+    reconstructionModel = ReconstructionModule(top_hint, a2v, q2v, v_emb2v)
+    return basemodel, reconstructionModel
+
+
+def build_reconstruction(num_hid):
+    return ReconstructionModule(num_hid)
