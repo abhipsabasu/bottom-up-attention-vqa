@@ -76,8 +76,8 @@ def train(model, reconstruction_model, train_loader, eval_loader, num_epochs, ou
                 pred, v, v_emb, q_emb, _ = model(v, None, q, a, b)
                 loss = reconstruction_model(v, pred, q_emb, v_emb, hint)
             else:
-                pred, v, v_emb, q_emb, loss = model(v, None, q, a, b)
-                loss = loss + reconstruction_model(v, pred, q_emb, v_emb, hint)
+                pred_, pred, v, v_emb, q_emb, loss = model(v, None, q, a, b)
+                loss = loss + reconstruction_model(v, pred_, q_emb, v_emb, hint)
 
             if (loss != loss).any():
               raise ValueError("NaN loss")
@@ -145,7 +145,7 @@ def evaluate(model, dataloader):
         with torch.no_grad():
             v = Variable(v).cuda()
             q = Variable(q).cuda()
-            pred, _, _, _, _ = model(v, None, q, None, None)
+            _, pred, _, _, _, _ = model(v, None, q, None, None)
             all_logits.append(pred.data.cpu().numpy())
             batch_score = compute_score_with_logits(pred, a.cuda()).sum()
             score += batch_score

@@ -6,6 +6,7 @@ from classifier import SimpleClassifier
 from fc import FCNet
 import numpy as np
 from torch.autograd import Variable
+from torch.nn.utils.weight_norm import weight_norm
 from train import cosine_loss
 
 
@@ -91,6 +92,7 @@ class BaseModel(nn.Module):
         joint_repr = q_repr * v_repr
         joint_repr_normal = self.normal(joint_repr)
         logits = self.classifier(joint_repr_normal)
+        logits_ = self.classifier(joint_repr)
         if labels is not None:
             if return_weights:
                 return self.debias_loss_fn(joint_repr, logits, bias, labels, True)
@@ -98,7 +100,7 @@ class BaseModel(nn.Module):
 
         else:
           loss = None
-        return logits, v, v_emb, q_emb, loss
+        return logits_, logits, v, v_emb, q_emb, loss
 
 
 class ReconstructionModule(nn.Module):
@@ -108,7 +110,7 @@ class ReconstructionModule(nn.Module):
         self.a2v = a2v
         self.q2v = q2v
         self.v_emb2v = v_emb2v
-        self.l1 = torch.nn.L1Loss()
+        self.l1 = torch.nn.L1Loss(reduction='none')
 
     def forward(self, v, logits, q_emb, v_emb, hint):
         """Forward
@@ -119,19 +121,25 @@ class ReconstructionModule(nn.Module):
         """
         batch_size = v.size(0)
         arange = torch.arange(batch_size).unsqueeze(1)
+        hint_one = (hint != 0).int()
+        hint_expand = hint_one[:, :, None].expand(batch_size, v.shape[1], v.shape[2])
+        v_ = v * hint_expand
+
         hint_sort, hint_ind = hint.sort(1, descending=True)
         v_ind = hint_ind[:, :self.top_hint]
-        v_ = v[arange, v_ind]
+        v_ = v_[arange, v_ind]
 
         v_recons = (self.a2v(logits) + self.q2v(q_emb)) / 2
         v_recons = v_recons.view(batch_size, self.top_hint, -1)
 
         v_emb_rec = self.v_emb2v(v_emb)
         v_emb_rec = v_emb_rec.view(batch_size, self.top_hint, -1)
-
+        # print(v_recons.min(), v_recons.max(), v_emb_rec.min(), v_emb_rec.max())
         l1 = 3 * self.l1(v_recons, v_)  # instance_bce_with_logits(v_recons, v_weighted) / 2
         l1_emb = 3 * self.l1(v_emb_rec, v_)
         loss = l1 + l1_emb
+        loss = (loss * (v_ != 0).int()).mean() #sum() / v_.shape[0]
+        # print(loss)
         return loss
 
 
@@ -160,19 +168,25 @@ def build_baseline0_newatt(dataset, num_hid):
         nn.Linear(2274, num_hid * 2),
         GeLU(),
         BertLayerNorm(num_hid * 2, eps=1e-12),
-        nn.Linear(num_hid * 2, 2048 * top_hint)
+        nn.Linear(num_hid * 2, 2048 * top_hint),
+        # nn.BatchNorm1d(2048 * top_hint, affine=False),
+        # nn.ReLU()
     )
     q2v = nn.Sequential(
         nn.Linear(1024, num_hid * 2),
         GeLU(),
         BertLayerNorm(num_hid * 2, eps=1e-12),
-        nn.Linear(num_hid * 2, 2048 * top_hint)
+        nn.Linear(num_hid * 2, 2048 * top_hint),
+        # nn.BatchNorm1d(2048 * top_hint, affine=False),
+        # nn.ReLU()
     )
     v_emb2v = nn.Sequential(
         nn.Linear(2048, num_hid * 2),
         GeLU(),
         BertLayerNorm(num_hid * 2, eps=1e-12),
-        nn.Linear(num_hid * 2, 2048 * top_hint)
+        nn.Linear(num_hid * 2, 2048 * top_hint),
+        # nn.BatchNorm1d(2048 * top_hint, affine=False),
+        # nn.ReLU()
     )
     basemodel = BaseModel(w_emb, q_emb, v_att, q_net, v_net, classifier, num_hid, a_token)
     reconstructionModel = ReconstructionModule(top_hint, a2v, q2v, v_emb2v)
