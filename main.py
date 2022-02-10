@@ -146,7 +146,7 @@ def main():
     # train(model, None, train_loader, eval_loader, args.epochs // 3, args.output, True, seed, 'original')
     # train(model, reconstruction_model, train_loader, eval_loader, args.epochs // 3, args.output, False, seed,
     #       'reconstruction')
-    train(model, reconstruction_model, train_loader, eval_loader, 10, args.output, True, seed,
+    train(model, reconstruction_model, train_loader, eval_loader, args.epochs, args.output, True, seed,
           'combination')
 
 

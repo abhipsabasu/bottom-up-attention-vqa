@@ -46,8 +46,8 @@ def train(model, reconstruction_model, train_loader, eval_loader, num_epochs, ou
         # model.load_state_dict(model_data)
     # optim = torch.optim.Adam(model.parameters(), lr=0.002, betas=(0.9, 0.999), eps=1e-08,
     #                          weight_decay=0)
-    # scheduler = MultiStepLR(optim, milestones=[15, 20, 25, 30, 35], gamma=0.5)
-    # scheduler.last_epoch = 0
+    scheduler = MultiStepLR(optim, milestones=[5, 7, 9, 11, 13], gamma=0.25)
+    scheduler.last_epoch = -1
     logger = utils.Logger(os.path.join(output, 'log.txt'))
     all_results = []
     best_score = 0
@@ -124,7 +124,7 @@ def train(model, reconstruction_model, train_loader, eval_loader, num_epochs, ou
             logger.write('\ttrain_loss: %.2f, score: %.2f' % (total_loss, train_score))
         else:
             logger.write('\ttrain_loss: %.2f' % (total_loss))
-        # scheduler.step()
+        scheduler.step()
         if run_eval:
 
             print('Best Score:', best_score*100, 'seed:', seed)

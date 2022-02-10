@@ -7,7 +7,7 @@ import torch
 from torch.autograd import Variable
 from torch.utils.data import DataLoader
 from tqdm import tqdm
-
+from train import compute_score_with_logits
 import base_model
 from dataset import VQAFeatureDataset, Dictionary
 
@@ -22,17 +22,17 @@ def main():
 
     print("Loading data...")
     dictionary = Dictionary.load_from_file('data/dictionary.pkl')
-    train_dset = VQAFeatureDataset('train', dictionary, cp=True)
-    eval_dset = VQAFeatureDataset('val', dictionary, cp=True)
+    train_dset = VQAFeatureDataset('train', dictionary, cp=False)
+    eval_dset = VQAFeatureDataset('val', dictionary, cp=False)
 
-    eval_loader = DataLoader(eval_dset, 256, shuffle=False, num_workers=0)
+    eval_loader = DataLoader(eval_dset, 512, shuffle=False, num_workers=0)
 
     constructor = 'build_%s' % 'baseline0_newatt'
-    model = getattr(base_model, constructor)(train_dset, 1024).cuda()
+    model,_ = getattr(base_model, constructor)(eval_dset, 1024)
 
     print("Loading state dict for %s..." % path)
 
-    state_dict = torch.load(join(path, "model.pth"))
+    state_dict = torch.load(join(path, "5193_combination_model.pth"))
     if all(k.startswith("module.") for k in state_dict):
         filtered = {}
         for k in state_dict:
@@ -48,21 +48,26 @@ def main():
     model.cuda()
     model.eval()
     print("Done")
-
+    score = 0
     predictions = []
-    for v, q, a, b in tqdm(eval_loader, ncols=100, total=len(eval_loader), desc="eval"):
-        v = Variable(v, volatile=True).cuda()
-        q = Variable(q, volatile=True).cuda()
-        factor = model(v, None, q, None, None, True)[0]
-        prediction = torch.max(factor, 1)[1].data.cpu().numpy()
-        for p in prediction:
-            predictions.append(train_dset.label2ans[p])
-
-    out = []
-    for p, e in zip(predictions, eval_dset.entries):
-        out.append(dict(answer=p, question_id=e["question_id"]))
-    with open(join(path, args.output_file), "w") as f:
-        json.dump(out, f)
+    for v, q, a, _, b in tqdm(eval_loader, ncols=100, total=len(eval_loader), desc="eval"):
+        with torch.no_grad():
+            v = Variable(v).cuda()
+            q = Variable(q).cuda()
+            factor = model(v, None, q, None, None, True)[1]
+            batch_score = compute_score_with_logits(factor, a.cuda()).sum()
+            score += batch_score
+            prediction = torch.max(factor, 1)[1].data.cpu().numpy()
+            for p in prediction:
+                predictions.append(train_dset.label2ans[p])
+    print(score)
+    score = score / len(eval_loader.dataset)
+    print(score, len(eval_loader.dataset))
+    # out = []
+    # for p, e in zip(predictions, eval_dset.entries):
+    #     out.append(dict(answer=p, question_id=e["question_id"]))
+    # with open(join(path, args.output_file), "w") as f:
+    #     json.dump(out, f)
 
 
 if __name__ == '__main__':
