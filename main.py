@@ -143,7 +143,7 @@ def main():
     eval_loader = DataLoader(eval_dset, batch_size, shuffle=False, num_workers=0)
 
     print("Starting training...")
-    # train(model, None, train_loader, eval_loader, args.epochs // 3, args.output, True, seed, 'original')
+    # train(model, None, train_loader, eval_loader, args.epochs, args.output, True, seed, 'original')
     # train(model, reconstruction_model, train_loader, eval_loader, args.epochs // 3, args.output, False, seed,
     #       'reconstruction')
     train(model, reconstruction_model, train_loader, eval_loader, args.epochs, args.output, True, seed,

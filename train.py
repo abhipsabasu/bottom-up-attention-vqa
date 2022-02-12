@@ -62,7 +62,8 @@ def train(model, reconstruction_model, train_loader, eval_loader, num_epochs, ou
         for i, (v, q, a, q_id, hint, b) in tqdm(enumerate(train_loader), ncols=100,
                                     desc="Epoch %d" % (epoch+1), total=len(train_loader)):
             model.zero_grad()
-            reconstruction_model.zero_grad()
+            if state != 'original':
+                reconstruction_model.zero_grad()
             optim.zero_grad()
             total_step += 1
             v = Variable(v).cuda()
@@ -71,13 +72,13 @@ def train(model, reconstruction_model, train_loader, eval_loader, num_epochs, ou
             b = Variable(b).cuda()
             hint = Variable(hint).cuda()
             if state == 'original':
-                pred, _, _, _, loss = model(v, None, q, a, b)
+                _, pred, _, _, _, loss = model(v, None, q, a, b)
             elif state == 'reconstruction':
                 pred, v, v_emb, q_emb, _ = model(v, None, q, a, b)
                 loss = reconstruction_model(v, pred, q_emb, v_emb, hint)
             else:
                 pred_, pred, v, v_emb, q_emb, loss = model(v, None, q, a, b)
-                loss = loss + reconstruction_model(v, pred_, q_emb, v_emb, hint)
+                loss = loss + reconstruction_model(v, pred_, q_emb, v_emb, hint, b)
 
             if (loss != loss).any():
               raise ValueError("NaN loss")
@@ -97,7 +98,8 @@ def train(model, reconstruction_model, train_loader, eval_loader, num_epochs, ou
 
         if run_eval:
             model.train(False)
-            reconstruction_model.train(False)
+            if state != 'original':
+                reconstruction_model.train(False)
             results = evaluate(model, eval_loader)
             results["epoch"] = epoch+1
             results["step"] = total_step
@@ -116,7 +118,8 @@ def train(model, reconstruction_model, train_loader, eval_loader, num_epochs, ou
                 json.dump(all_results, f, indent=2)
 
             model.train(True)
-            reconstruction_model.train(True)
+            if state != 'original':
+                reconstruction_model.train(True)
             bound = results["upper_bound"]
 
         logger.write('epoch %d, time: %.2f' % (epoch+1, time.time()-t))

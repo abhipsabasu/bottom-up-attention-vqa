@@ -112,7 +112,7 @@ class ReconstructionModule(nn.Module):
         self.v_emb2v = v_emb2v
         self.l1 = torch.nn.L1Loss(reduction='none')
 
-    def forward(self, v, logits, q_emb, v_emb, hint):
+    def forward(self, v, logits, q_emb, v_emb, hint, bias):
         """Forward
         v: [batch, num_objs, obj_dim]
         b: [batch, num_objs, b_dim]
@@ -138,8 +138,11 @@ class ReconstructionModule(nn.Module):
         l1 = 3 * self.l1(v_recons, v_)  # instance_bce_with_logits(v_recons, v_weighted) / 2
         l1_emb = 3 * self.l1(v_emb_rec, v_)
         loss = l1 + l1_emb
+
+        maxb = (torch.max(bias, 1)[1].data).unsqueeze(-1)
+        weight = (1 - bias[arange, maxb]).unsqueeze(-1)
+        loss = (weight ** 2) * loss
         loss = (loss * (v_ != 0).int()).mean() #sum() / v_.shape[0]
-        # print(loss)
         return loss
 
 
@@ -164,30 +167,33 @@ def build_baseline0_newatt(dataset, num_hid):
         num_hid, num_hid * 2, dataset.num_ans_candidates, 0.5)
     a_token = dataset.ans_tokens
     top_hint = 10
-    a2v = nn.Sequential(
-        nn.Linear(2274, num_hid * 2),
-        GeLU(),
-        BertLayerNorm(num_hid * 2, eps=1e-12),
-        nn.Linear(num_hid * 2, 2048 * top_hint),
-        # nn.BatchNorm1d(2048 * top_hint, affine=False),
-        # nn.ReLU()
-    )
-    q2v = nn.Sequential(
-        nn.Linear(1024, num_hid * 2),
-        GeLU(),
-        BertLayerNorm(num_hid * 2, eps=1e-12),
-        nn.Linear(num_hid * 2, 2048 * top_hint),
-        # nn.BatchNorm1d(2048 * top_hint, affine=False),
-        # nn.ReLU()
-    )
-    v_emb2v = nn.Sequential(
-        nn.Linear(2048, num_hid * 2),
-        GeLU(),
-        BertLayerNorm(num_hid * 2, eps=1e-12),
-        nn.Linear(num_hid * 2, 2048 * top_hint),
-        # nn.BatchNorm1d(2048 * top_hint, affine=False),
-        # nn.ReLU()
-    )
+    # a2v = nn.Sequential(
+    #     nn.Linear(2274, num_hid * 2),
+    #     GeLU(),
+    #     BertLayerNorm(num_hid * 2, eps=1e-12),
+    #     nn.Linear(num_hid * 2, 2048 * top_hint),
+    #     # nn.BatchNorm1d(2048 * top_hint, affine=False),
+    #     # nn.ReLU()
+    # )
+    # q2v = nn.Sequential(
+    #     nn.Linear(1024, num_hid * 2),
+    #     GeLU(),
+    #     BertLayerNorm(num_hid * 2, eps=1e-12),
+    #     nn.Linear(num_hid * 2, 2048 * top_hint),
+    #     # nn.BatchNorm1d(2048 * top_hint, affine=False),
+    #     # nn.ReLU()
+    # )
+    # v_emb2v = nn.Sequential(
+    #     nn.Linear(2048, num_hid * 2),
+    #     GeLU(),
+    #     BertLayerNorm(num_hid * 2, eps=1e-12),
+    #     nn.Linear(num_hid * 2, 2048 * top_hint),
+    #     # nn.BatchNorm1d(2048 * top_hint, affine=False),
+    #     # nn.ReLU()
+    # )
+    a2v = FCNet([2274, 2048, 2048 * top_hint])
+    q2v = FCNet([1024, 2048, 2048 * top_hint])
+    v_emb2v = FCNet([2048, 2048, 2048 * top_hint])
     basemodel = BaseModel(w_emb, q_emb, v_att, q_net, v_net, classifier, num_hid, a_token)
     reconstructionModel = ReconstructionModule(top_hint, a2v, q2v, v_emb2v)
     return basemodel, reconstructionModel
