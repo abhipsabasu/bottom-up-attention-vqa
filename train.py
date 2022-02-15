@@ -56,7 +56,7 @@ def train(model, reconstruction_model, train_loader, eval_loader, num_epochs, ou
     for epoch in range(num_epochs):
         total_loss = 0
         train_score = 0
-
+        l1_tot = 0
         t = time.time()
         print(get_lr(optim))
         for i, (v, q, a, q_id, hint, b) in tqdm(enumerate(train_loader), ncols=100,
@@ -78,8 +78,9 @@ def train(model, reconstruction_model, train_loader, eval_loader, num_epochs, ou
                 loss = reconstruction_model(v, pred, q_emb, v_emb, hint)
             else:
                 pred_, pred, v, v_emb, q_emb, loss = model(v, None, q, a, b)
-                loss = loss + reconstruction_model(v, pred_, q_emb, v_emb, hint, b)
-
+                l1 = reconstruction_model(v, pred_, q_emb, v_emb, hint, b)
+                loss = loss + l1
+                l1_tot += l1.item() * v.size(0)
             if (loss != loss).any():
               raise ValueError("NaN loss")
             loss.backward()
@@ -93,7 +94,7 @@ def train(model, reconstruction_model, train_loader, eval_loader, num_epochs, ou
 
         total_loss /= len(train_loader.dataset)
         train_score = 100 * train_score / len(train_loader.dataset)
-
+        l1_tot /= len(train_loader.dataset)
         run_eval = eval_each_epoch  # or (epoch == num_epochs - 1)
 
         if run_eval:
@@ -125,8 +126,9 @@ def train(model, reconstruction_model, train_loader, eval_loader, num_epochs, ou
         logger.write('epoch %d, time: %.2f' % (epoch+1, time.time()-t))
         if state != 'reconstruction':
             logger.write('\ttrain_loss: %.2f, score: %.2f' % (total_loss, train_score))
+            logger.write('\tl1 loss: %.2f' % l1_tot)
         else:
-            logger.write('\ttrain_loss: %.2f' % (total_loss))
+            logger.write('\ttrain_loss: %.2f' % total_loss)
         scheduler.step()
         if run_eval:
 
