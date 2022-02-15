@@ -5,6 +5,7 @@ from language_model import WordEmbedding, QuestionEmbedding
 from classifier import SimpleClassifier
 from fc import FCNet
 import numpy as np
+import torch.nn.functional as F
 from torch.autograd import Variable
 from torch.nn.utils.weight_norm import weight_norm
 from train import cosine_loss
@@ -110,7 +111,7 @@ class ReconstructionModule(nn.Module):
         self.a2v = a2v
         self.q2v = q2v
         self.v_emb2v = v_emb2v
-        self.l1 = torch.nn.L1Loss(reduction='none')
+        self.l1 = torch.nn.MSELoss(reduction='none')
 
     def forward(self, v, logits, q_emb, v_emb, hint, bias):
         """Forward
@@ -121,28 +122,37 @@ class ReconstructionModule(nn.Module):
         """
         batch_size = v.size(0)
         arange = torch.arange(batch_size).unsqueeze(1)
-        hint_one = (hint != 0).int()
-        hint_expand = hint_one[:, :, None].expand(batch_size, v.shape[1], v.shape[2])
-        v_ = v * hint_expand
+        # hint_one = (hint != 0).int()
+        # hint_count = hint_one.sum(1)
+        # hint_expand = hint_one[:, :, None].expand(batch_size, v.shape[1], v.shape[2])
+        # v_ = v * hint_expand
 
         hint_sort, hint_ind = hint.sort(1, descending=True)
         v_ind = hint_ind[:, :self.top_hint]
-        v_ = v_[arange, v_ind]
+        v_ = v[arange, v_ind]
+        v_ = F.normalize(v_, dim=-1)
 
         v_recons = (self.a2v(logits) + self.q2v(q_emb)) / 2
         v_recons = v_recons.view(batch_size, self.top_hint, -1)
+        v_recons = F.normalize(v_recons, dim=-1)
 
         v_emb_rec = self.v_emb2v(v_emb)
         v_emb_rec = v_emb_rec.view(batch_size, self.top_hint, -1)
+        v_emb_rec = F.normalize(v_emb_rec, dim=-1)
+
         # print(v_recons.min(), v_recons.max(), v_emb_rec.min(), v_emb_rec.max())
         l1 = 3 * self.l1(v_recons, v_)  # instance_bce_with_logits(v_recons, v_weighted) / 2
         l1_emb = 3 * self.l1(v_emb_rec, v_)
-        loss = l1 + l1_emb
+        loss = l1 + l1_emb #torch.norm(v_recons, p=1, dim=-1)
 
-        maxb = (torch.max(bias, 1)[1].data).unsqueeze(-1)
+        maxb = torch.max(bias, 1)[1].data.unsqueeze(-1)
         weight = (1 - bias[arange, maxb]).unsqueeze(-1)
         loss = (weight ** 2) * loss
-        loss = (loss * (v_ != 0).int()).mean() #sum() / v_.shape[0]
+        # loss = (loss * (v_ != 0).int()).sum((-2, -1))
+        # loss = loss[hint_count != 0]
+        # hint_count = hint_count[hint_count!=0]
+        # loss = loss / (2048 * hint_count)
+        loss = loss.mean()  #sum() / v_.shape[0] #sum() / v_.shape[0]
         return loss
 
 
@@ -167,30 +177,6 @@ def build_baseline0_newatt(dataset, num_hid):
         num_hid, num_hid * 2, dataset.num_ans_candidates, 0.5)
     a_token = dataset.ans_tokens
     top_hint = 10
-    # a2v = nn.Sequential(
-    #     nn.Linear(2274, num_hid * 2),
-    #     GeLU(),
-    #     BertLayerNorm(num_hid * 2, eps=1e-12),
-    #     nn.Linear(num_hid * 2, 2048 * top_hint),
-    #     # nn.BatchNorm1d(2048 * top_hint, affine=False),
-    #     # nn.ReLU()
-    # )
-    # q2v = nn.Sequential(
-    #     nn.Linear(1024, num_hid * 2),
-    #     GeLU(),
-    #     BertLayerNorm(num_hid * 2, eps=1e-12),
-    #     nn.Linear(num_hid * 2, 2048 * top_hint),
-    #     # nn.BatchNorm1d(2048 * top_hint, affine=False),
-    #     # nn.ReLU()
-    # )
-    # v_emb2v = nn.Sequential(
-    #     nn.Linear(2048, num_hid * 2),
-    #     GeLU(),
-    #     BertLayerNorm(num_hid * 2, eps=1e-12),
-    #     nn.Linear(num_hid * 2, 2048 * top_hint),
-    #     # nn.BatchNorm1d(2048 * top_hint, affine=False),
-    #     # nn.ReLU()
-    # )
     a2v = FCNet([2274, 2048, 2048 * top_hint])
     q2v = FCNet([1024, 2048, 2048 * top_hint])
     v_emb2v = FCNet([2048, 2048, 2048 * top_hint])
