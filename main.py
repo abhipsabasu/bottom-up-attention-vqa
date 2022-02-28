@@ -8,8 +8,8 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 import numpy as np
-
-from dataset import Dictionary, VQAFeatureDataset
+import matplotlib.pyplot as plt
+from dataset import Dictionary, VQAFeatureDataset, VQAShuffleDataset
 import base_model
 from train import train
 import utils
@@ -70,12 +70,12 @@ def main():
 
     dictionary = Dictionary.load_from_file('data/dictionary.pkl')
     cp = not args.nocp
-
+    print('gsdjgsjghshg')
     print("Building train dataset...")
-    train_dset = VQAFeatureDataset('train', dictionary, cp=cp,
+    train_dset = VQAFeatureDataset('dev', dictionary, cp=cp,
                                    cache_image_features=args.cache_features)
     print("Building test dataset...")
-    eval_dset = VQAFeatureDataset('val', dictionary, cp=cp,
+    eval_dset = VQAFeatureDataset('test', dictionary, cp=cp,
                                   cache_image_features=args.cache_features)
 
     answer_voc_size = train_dset.num_ans_candidates
@@ -100,9 +100,23 @@ def main():
         prob_array = np.zeros(answer_voc_size, np.float32)
         for label, total_score in question_type_to_probs[q_type].items():
             prob_array[label] += total_score
-        prob_array /= count
+        # prob_array /= count
         question_type_to_prob_array[q_type] = prob_array
-
+    # count_arr_train = [0] * 2274
+    # for q_type, stat in question_type_to_prob_array.items():
+    #     for i in range(2274):
+    #         count_arr_train[i] = count_arr_train[i] + stat[i]
+    # count_arr_train.sort()
+    # count_idx = np.argsort(count_arr_train)
+    # count_idx = count_idx[::-1]
+    #
+    # plt.semilogy([i for i in range(2274)], count_arr, label='Test Label Distribution')
+    # plt.semilogy([i for i in range(2274)], count_arr_train, label='Training Label Distribution')
+    # plt.title('Label Distribution for The dataset - overall')
+    # plt.legend()
+    # plt.savefig('label_distribution.png')
+    # print(count_arr[-10:])
+    # print('Reached...#########')
     # Now add a `bias` field to each example
     for ds in [train_dset, eval_dset]:
         for ex in ds.entries:
@@ -111,8 +125,8 @@ def main():
 
     # Build the model using the original constructor
     constructor = 'build_%s' % args.model
-    model, reconstruction_model = getattr(base_model, constructor)(train_dset, args.num_hid)
-    model.w_emb.init_embedding('data/glove6b_init_300d.npy')
+    model, basemodel = getattr(base_model, constructor)(train_dset, args.num_hid)
+
 
     # Add the loss_fn based our arguments
     if args.mode == "bias_product":
@@ -132,23 +146,23 @@ def main():
     with open(args.output + "/debias_objective.json", "w") as f:
         js = model.debias_loss_fn.to_json()
         json.dump(js, f, indent=2)
-    reconstruction_model = reconstruction_model.cuda()
+    # basemodel = basemodel.cuda()
     model = model.cuda()
-    # model.apply(weights_init_kn)
+    model.apply(weights_init_kn)
     batch_size = args.batch_size
 
 
     # The original version uses multiple workers, but that just seems slower on my setup
-    train_loader = DataLoader(train_dset, batch_size, shuffle=True, num_workers=0)
-    eval_loader = DataLoader(eval_dset, batch_size, shuffle=False, num_workers=0)
+    train_loader = DataLoader(train_dset, batch_size, shuffle=True, num_workers=4, pin_memory=True)
+    eval_loader = DataLoader(eval_dset, batch_size, shuffle=False, num_workers=4, pin_memory=True)
 
     print("Starting training...")
-    # train(model, None, train_loader, eval_loader, args.epochs, args.output, True, seed, 'original')
+    train(model, basemodel, train_loader, eval_loader, args.epochs, args.output, True, seed, 'original')
     # train(model, reconstruction_model, train_loader, eval_loader, args.epochs // 3, args.output, False, seed,
     #       'reconstruction')
-    train(model, reconstruction_model, train_loader, eval_loader, args.epochs, args.output, True, seed,
-          'combination')
-
-
+    # train(model, reconstruction_model, train_loader, eval_loader, args.epochs, args.output, True, seed,
+    #       'combination')
+#
+#
 if __name__ == '__main__':
     main()

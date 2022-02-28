@@ -77,7 +77,7 @@ class Logger(object):
         if not os.path.exists(dirname):
             os.mkdir(dirname)
 
-        self.log_file = open(output_name, 'w')
+        self.log_file = open(output_name, 'a')
         self.infos = {}
 
     def append(self, key, val):

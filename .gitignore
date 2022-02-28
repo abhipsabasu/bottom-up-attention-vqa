@@ -4,3 +4,7 @@
 data
 saved_models
 rcnn_feature
+tools/tools
+vqaEvaluation
+probabilities.json
+vqa_eval.py
